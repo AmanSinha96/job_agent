@@ -1,0 +1,17 @@
+# Cloud dependencies (GitHub Actions runner)
+# No browser needed — scraping runs on python-jobspy (HTTP-based).
+# Playwright is only needed locally for apply.py / review_runner.py.
+
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+groq>=0.9.0
+google-genai>=0.5.0
+reportlab>=4.2.0
+google-api-python-client>=2.130.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+python-dotenv>=1.0.0
+python-docx>=1.2.0
+schedule>=1.2.2
+python-jobspy>=1.1.80

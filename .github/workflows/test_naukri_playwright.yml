@@ -1,0 +1,42 @@
+name: "[Diagnostic] Naukri Playwright test — manual only"
+
+# One-off diagnostic, not part of the pipeline. Trigger manually from the
+# Actions tab to check whether Playwright + stealth gets past Naukri's
+# block from a real GitHub Actions runner IP (tested successfully, but
+# inconsistently, from a sandbox environment — this confirms whether it
+# holds up from the actual target environment before building it into
+# the real pipeline).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + stealth
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright playwright-stealth
+          playwright install --with-deps chromium
+
+      - name: Run Naukri diagnostic
+        run: python test_naukri_ci.py
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-ci-test-screenshots
+          path: naukri_ci_test_*.png
+          if-no-files-found: ignore

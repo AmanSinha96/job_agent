@@ -1,0 +1,153 @@
+name: Job Agent — 4-Hour Sweep (Indeed)
+# zip_recruiter/naukri/google dropped from the site list below — confirmed
+# via live testing (network-blocked or returning zero rows). See cloud_run.py
+# for details. Re-add them in the "Run cloud pipeline" step's --sites arg
+# if/when they start working again.
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 40
+
+    steps:
+
+      # -------------------------------------------------------
+      # Checkout Repository
+      # -------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # -------------------------------------------------------
+      # Python
+      # -------------------------------------------------------
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # -------------------------------------------------------
+      # Install dependencies
+      # -------------------------------------------------------
+      # No LibreOffice — resumes are emailed as DOCX (also parses more
+      # reliably in most ATS than PDF), which avoids a ~1-2 min apt-get
+      # install on every run.
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_cloud.txt
+
+      # -------------------------------------------------------
+      # Gmail OAuth Token
+      # -------------------------------------------------------
+
+      - name: Restore Gmail token
+        run: |
+          echo "${{ secrets.GMAIL_TOKEN_B64 }}" | base64 -d > token.json
+        continue-on-error: true
+
+      # -------------------------------------------------------
+      # Gmail Credentials
+      # -------------------------------------------------------
+
+      - name: Restore Gmail credentials
+        run: |
+          echo '${{ secrets.GMAIL_CREDENTIALS }}' > credentials.json
+
+      # -------------------------------------------------------
+      # Verify master resume exists
+      # -------------------------------------------------------
+
+      - name: Verify master resume
+        run: |
+          if [ ! -f resume_base.docx ]; then
+            echo "resume_base.docx not found."
+            exit 1
+          fi
+
+      # -------------------------------------------------------
+      # Run Job Agent
+      # -------------------------------------------------------
+
+      - name: Run cloud pipeline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PROXIES: ${{ secrets.PROXIES }}
+
+          JOB_EMAIL: ${{ secrets.JOB_EMAIL }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+
+          FIRST_NAME: ${{ secrets.FIRST_NAME }}
+          LAST_NAME: ${{ secrets.LAST_NAME }}
+
+          PHONE: ${{ secrets.PHONE }}
+
+          LINKEDIN_URL: ${{ secrets.LINKEDIN_URL }}
+          GITHUB_URL: ${{ secrets.GITHUB_URL }}
+
+          YEARS_EXP: ${{ secrets.YEARS_EXP }}
+          SALARY_LPA: ${{ secrets.SALARY_LPA }}
+          MIN_SALARY_LPA: ${{ secrets.MIN_SALARY_LPA }}
+          EXPERIENCE_LEVEL: ${{ secrets.EXPERIENCE_LEVEL }}
+
+        run: |
+          python cloud_run.py --sites indeed --hours-old 4
+
+      # -------------------------------------------------------
+      # Upload generated resumes
+      # -------------------------------------------------------
+
+      - name: Upload generated resumes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-resumes
+          path: |
+            generated_resumes/**
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------
+      # Upload logs
+      # -------------------------------------------------------
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-agent-logs
+          path: |
+            *.log
+          if-no-files-found: ignore
+
+      # -------------------------------------------------------
+      # Commit updated databases/cache
+      # -------------------------------------------------------
+
+      - name: Commit updated data
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "Job Agent Bot"
+
+          git add data/jobs.db || true
+          git add resume_cache.json || true
+          git add generated_resumes/index.json || true
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "chore: update cache [skip ci]"
+            git push
+          fi
+        continue-on-error: true

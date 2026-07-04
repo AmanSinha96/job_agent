@@ -1,0 +1,31 @@
+.venv/
+token.json
+credentials.json
+gmail_token.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Runtime-generated (data/jobs.db is the one exception the workflows commit)
+data/*
+!data/jobs.db
+resume_cache/
+generated_resumes/*.docx
+generated_resumes/*.pdf
+reports/
+screenshots/
+*.log
+
+# AI-tooling config/state — unrelated to the job-agent application itself,
+# no reason for it to be visible on a public repo
+.claude/
+.claude-flow/
+.swarm/
+.agents/
+.mcp.json
+
+# Diagnostic screenshots from test_naukri_local.py / test_naukri_ci.py
+naukri_test_screenshot*.png
+naukri_ci_test_*.png
