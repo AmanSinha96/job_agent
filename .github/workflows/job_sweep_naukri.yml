@@ -1,4 +1,4 @@
-name: Job Agent — 6-Hour Sweep (Naukri)
+name: Job Agent — Naukri Sweep
 
 # Naukri needs a real browser (Playwright + stealth) — jobspy's own Naukri
 # scraper hits a 406 every time (confirmed live). Confirmed live from an
@@ -6,15 +6,17 @@ name: Job Agent — 6-Hour Sweep (Naukri)
 # intermittent 403 — handled gracefully in naukri_playwright.py, not a
 # reason to panic if the job count looks lower than expected some cycles.
 #
-# On its own moderate cadence (not the 4h frequent cadence, not as sparse
-# as LinkedIn's 12h) since each request is a full browser page load —
-# meaningfully slower per-request than jobspy's HTTP-based sources. Offset
-# to 1,7,13,19 UTC so it never collides with the frequent (0/4/8/12/16/20)
-# or LinkedIn (2/14) workflows' git-push step.
+# 5 runs/day at IST 00:30/09:30/12:30/16:30/18:30 (UTC 19:00/04:00/07:00/
+# 11:00/13:00). --hours-old is set per-trigger below to exactly cover the
+# gap since this workflow's own previous run (floor 4h).
 
 on:
   schedule:
-    - cron: "0 1,7,13,19 * * *"
+    - cron: "0 19 * * *"  # IST 00:30, covers last 6h
+    - cron: "0 4 * * *"   # IST 09:30, covers last 9h
+    - cron: "0 7 * * *"   # IST 12:30, covers last 4h
+    - cron: "0 11 * * *"  # IST 16:30, covers last 4h
+    - cron: "0 13 * * *"  # IST 18:30, covers last 4h
   workflow_dispatch:
 
 jobs:
@@ -83,6 +85,22 @@ jobs:
           fi
 
       # -------------------------------------------------------
+      # Determine freshness window for whichever cron entry fired this run
+      # -------------------------------------------------------
+
+      - name: Determine hours_old for this trigger
+        id: hours
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 19 * * *") echo "value=6" >> "$GITHUB_OUTPUT" ;;
+            "0 4 * * *") echo "value=9" >> "$GITHUB_OUTPUT" ;;
+            "0 7 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "0 11 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "0 13 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
+          esac
+
+      # -------------------------------------------------------
       # Run Job Agent
       # -------------------------------------------------------
 
@@ -109,7 +127,7 @@ jobs:
           EXPERIENCE_LEVEL: ${{ secrets.EXPERIENCE_LEVEL }}
 
         run: |
-          python cloud_run.py --sites naukri --hours-old 6
+          python cloud_run.py --sites naukri --hours-old ${{ steps.hours.outputs.value }}
 
       # -------------------------------------------------------
       # Upload generated resumes

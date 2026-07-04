@@ -83,15 +83,26 @@ def _parse_card(card, city: str) -> dict | None:
         return None
 
     company = _extract_text(card, "a.comp-name")
-    location = _extract_text(card, ".locWdth") or city
+    # Trust the city we searched for over Naukri's own returned location
+    # text — confirmed live it often differs ("Bengaluru" when we searched
+    # "Bangalore", multi-city listings like "Bengaluru, Mumbai (All Areas)"),
+    # which would otherwise fail pipeline.location_matches() for no reason
+    # related to actual relevance. Same principle as jobspy's raw conversion.
+    location = city
     salary = _extract_text(card, ".sal-wrap .sal") or None
+    experience = _extract_text(card, ".expwdth")
     snippet = _extract_text(card, ".job-desc")
     tags = card.locator(".tags-gt .tag-li").all_inner_texts()
     posted_text = _extract_text(card, ".job-post-day")
 
+    # Fold experience range + skill tags into the description text so
+    # pipeline.py's experience/keyword filters (which only look at
+    # title+description) see them uniformly across every source.
     description = snippet
+    if experience:
+        description = f"{experience} experience. {description}"
     if tags:
-        description = f"{snippet} Skills: {', '.join(t.strip() for t in tags if t.strip())}"
+        description = f"{description} Skills: {', '.join(t.strip() for t in tags if t.strip())}"
 
     return {
         "title": title,

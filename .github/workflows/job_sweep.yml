@@ -1,12 +1,21 @@
-name: Job Agent — 4-Hour Sweep (Indeed)
+name: Job Agent — Indeed Sweep
+
 # zip_recruiter/naukri/google dropped from the site list below — confirmed
 # via live testing (network-blocked or returning zero rows). See cloud_run.py
 # for details. Re-add them in the "Run cloud pipeline" step's --sites arg
 # if/when they start working again.
+#
+# 4 runs/day at IST 08:30/13:30/17:30/21:30 (UTC 03:00/08:00/12:00/16:00).
+# --hours-old is set per-trigger below to exactly cover the gap since this
+# workflow's own previous run (floor 4h) — no gap in coverage, no need to
+# guess a single fixed value.
 
 on:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "0 3 * * *"   # IST 08:30, covers last 11h
+    - cron: "0 8 * * *"   # IST 13:30, covers last 5h
+    - cron: "0 12 * * *"  # IST 17:30, covers last 4h
+    - cron: "0 16 * * *"  # IST 21:30, covers last 4h
   workflow_dispatch:
 
 jobs:
@@ -77,6 +86,21 @@ jobs:
           fi
 
       # -------------------------------------------------------
+      # Determine freshness window for whichever cron entry fired this run
+      # -------------------------------------------------------
+
+      - name: Determine hours_old for this trigger
+        id: hours
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 3 * * *") echo "value=11" >> "$GITHUB_OUTPUT" ;;
+            "0 8 * * *") echo "value=5" >> "$GITHUB_OUTPUT" ;;
+            "0 12 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "0 16 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
+          esac
+
+      # -------------------------------------------------------
       # Run Job Agent
       # -------------------------------------------------------
 
@@ -103,7 +127,7 @@ jobs:
           EXPERIENCE_LEVEL: ${{ secrets.EXPERIENCE_LEVEL }}
 
         run: |
-          python cloud_run.py --sites indeed --hours-old 4
+          python cloud_run.py --sites indeed --hours-old ${{ steps.hours.outputs.value }}
 
       # -------------------------------------------------------
       # Upload generated resumes

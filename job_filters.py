@@ -7,33 +7,33 @@ dependency, which the jobspy-based cloud scrape no longer needs.
 """
 
 # Search terms actually sent to jobspy as `search_term` — what gets queried.
+# Trimmed 2026-07: Data Engineer/Data Scientist/Machine Learning Engineer
+# removed per explicit request — keeping the role list minimal for the
+# first week before widening again.
 TARGET_ROLES = [
     "Data Analyst",
     "Analytics Engineer",
     "AI Engineer",
-    "Data Engineer",
-    "Data Scientist",
-    "Machine Learning Engineer",
     "BI Analyst",
     "AI Product Engineer",
 ]
 
 # Broader title-acceptance list used by role_matches() to decide whether a
 # scraped posting counts as relevant. Superset of TARGET_ROLES: a search for
-# one role commonly surfaces adjacent titles worth keeping (e.g. searching
-# "Data Engineer" can return a "Business Intelligence Analyst" posting).
-# The MATCH_KEYWORDS/MIN_MATCH_COUNT gate below still has to pass too, so
+# one role commonly surfaces adjacent titles worth keeping. The
+# MATCH_KEYWORDS/MIN_MATCH_COUNT gate below still has to pass too, so
 # widening this doesn't let irrelevant postings through on its own.
 ROLE_MATCH_TERMS = TARGET_ROLES + [
     "business intelligence analyst",
     "business analyst",
     "analytics manager",
-    "data science",
-    "ml engineer",
     "data consultant",
 ]
 
-LOCATIONS = ["Bangalore", "Bengaluru", "Pune", "Gurugram", "Hyderabad"]
+# Trimmed 2026-07: Bengaluru dropped (same city as Bangalore, was double-
+# counting search combos), Gurugram and Pune dropped for now — keeping the
+# city list minimal for the first week before widening again.
+LOCATIONS = ["Bangalore", "Hyderabad"]
 
 # Aligned to Aman's actual resume (resume_base.docx) — real stack only, so
 # the confidence score reflects genuine fit rather than generic buzzwords.
@@ -88,7 +88,23 @@ BLOCKED_KEYWORDS = {
     "medical",
     "teacher",
     "content writer",
+    # Junior/entry-level exclusion — candidate is 6+ years experienced,
+    # explicitly does not want junior/entry postings recommended.
+    "entry level",
+    "entry-level",
+    "fresher",
+    "freshers",
+    "trainee",
+    "campus hire",
+    "graduate program",
+    "junior",
 }
+
+# Minimum years of experience a posting must require to be kept — a JD
+# stating a lower experience range (e.g. "0-3 years") gets rejected even if
+# it doesn't use an obvious junior/entry keyword above. See
+# pipeline.extract_min_experience_years().
+MIN_EXPERIENCE_YEARS = 5
 
 # Employee-count thresholds for the "big company" scoring boost in
 # pipeline.compute_confidence(). jobspy reports company size as a bucketed

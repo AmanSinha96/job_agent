@@ -81,7 +81,7 @@ YEARS_EXP = os.getenv("YEARS_EXP", "6")
 SALARY_LPA = os.getenv("SALARY_LPA", "25")
 
 MIN_SALARY_LPA = float(
-    os.getenv("MIN_SALARY_LPA", "18")
+    os.getenv("MIN_SALARY_LPA", "23")
 )
 
 EXPERIENCE_LEVEL = os.getenv(

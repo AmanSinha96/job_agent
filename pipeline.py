@@ -12,10 +12,13 @@ from resume_scorer import score_resume
 from job_filters import (
     TARGET_ROLES, ROLE_MATCH_TERMS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
     BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES, MID_COMPANY_MIN_EMPLOYEES,
+    MIN_EXPERIENCE_YEARS,
 )
-from config import PROXIES
+from config import PROXIES, MIN_SALARY_LPA
 
-SELECT_TOP_N = 30
+# Raised from 30 -> 40 so a strong week doesn't get cut off; tailoring still
+# only ever runs for the top 15 regardless (see cloud_run.TAILOR_TOP_N).
+SELECT_TOP_N = 40
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,49 @@ def extract_salary_lpa(text: str):
             except Exception:
                 pass
     return None
+
+def extract_min_experience_years(text: str) -> int | None:
+    """Best-effort extraction of the LOWER bound of a stated experience
+    requirement ("5-8 years" -> 5, "6+ years" -> 6, "minimum 5 years" -> 5).
+    Range pattern must be checked first: a bare '\\d+ years?' regex applied to
+    "5-8 years" matches "8" (the number immediately before "years"), not the
+    intended lower bound "5"."""
+    text = text.lower()
+
+    m = re.search(r"(\d+)\s*[-–to]+\s*(\d+)\+?\s*(?:years?|yrs?)", text)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r"(\d+)\+\s*(?:years?|yrs?)", text)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r"(?:minimum|min\.?|at least)\s*(\d+)\s*(?:years?|yrs?)", text)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r"(\d+)\s*(?:years?|yrs?)", text)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+def salary_to_lpa(salary_text: str | None) -> float | None:
+    """Parse a salary string into an approximate lower-bound LPA figure.
+    Naukri text is already labeled in Lacs ("13-23 Lacs PA"); jobspy-sourced
+    strings are raw annual rupee amounts (already annualized in
+    _salary_string() below) with no such label — divide by 100,000."""
+    if not salary_text:
+        return None
+    text = salary_text.lower()
+    numbers = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+\.?\d*", text)]
+    if not numbers:
+        return None
+    if "lac" in text or "lakh" in text or "lpa" in text:
+        return min(numbers)
+    if "inr" not in text and any(c.isalpha() for c in text.replace("inr", "")):
+        return None  # non-INR currency — not comparable without FX conversion
+    return min(numbers) / 100000
 
 # --- Pipeline logic ---
 
@@ -108,10 +154,23 @@ def should_keep(job: dict):
     if len(job["title"]) < 3: return False, "invalid_title"
     if not job["company"]: return False, "missing_company"
     if not job["url"]: return False, "missing_url"
-    
+
+    # 6. Experience floor — candidate is 6+ years, don't surface junior/
+    # mid-junior postings. Only rejects when a number is actually stated;
+    # JDs that don't mention years at all aren't penalized for silence.
+    min_years = extract_min_experience_years(text)
+    if min_years is not None and min_years < MIN_EXPERIENCE_YEARS:
+        return False, f"experience_too_low: {min_years}y stated, need {MIN_EXPERIENCE_YEARS}y+"
+
+    # 7. Salary floor — only rejects when a salary is actually mentioned and
+    # clearly parses below the floor; unlisted salary never blocks a job.
+    salary_lpa = salary_to_lpa(job.get("salary"))
+    if salary_lpa is not None and salary_lpa < MIN_SALARY_LPA:
+        return False, f"salary_below_floor: {salary_lpa} LPA, need {MIN_SALARY_LPA}+"
+
     # Re-calculate confidence
     confidence = min(len(matches) * 15, 100)
-    
+
     if confidence < 25: return False, "low_confidence"
     return True, {"confidence": confidence, "matches": matches, "salary": None}
 
@@ -164,11 +223,20 @@ def _jobspy_row_to_raw(row: dict, search_city: str, site_override: str | None = 
         "company_size": parse_company_size(_cell(row.get("company_num_employees"))),
     }
 
+_INTERVAL_TO_ANNUAL_MULTIPLIER = {"monthly": 12, "weekly": 52, "daily": 260, "hourly": 2080}
+
 def _salary_string(row: dict) -> str | None:
-    lo, hi, currency = _cell(row.get("min_amount")), _cell(row.get("max_amount")), _cell(row.get("currency"))
+    lo, hi, currency, interval = (
+        _cell(row.get("min_amount")), _cell(row.get("max_amount")),
+        _cell(row.get("currency")), _cell(row.get("interval")),
+    )
     if not lo and not hi:
         return None
-    parts = [str(int(v)) for v in (lo, hi) if v]
+    # Annualize here so every downstream consumer (salary_to_lpa()) can
+    # assume "raw number = annual" without re-deriving interval — a monthly
+    # salary was previously being compared as if it were already annual.
+    multiplier = _INTERVAL_TO_ANNUAL_MULTIPLIER.get((interval or "").lower(), 1)
+    parts = [str(int(v * multiplier)) for v in (lo, hi) if v]
     return f"{currency or ''} {'-'.join(parts)}".strip()
 
 async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=LOCATIONS):
