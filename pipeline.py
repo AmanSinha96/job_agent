@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import time
@@ -181,14 +182,50 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
     existing_urls = {row["url"] for row in conn.execute("SELECT url FROM jobs").fetchall()}
     conn.close()
 
+    def process_and_save(raw: dict) -> bool:
+        job = normalize_job(raw)
+        job["board"] = raw["board"]
+        job["company_size"] = raw.get("company_size", 0)
+        if not job["url"] or job["url"] in existing_urls:
+            return False
+        keep, result = should_keep(job)
+        if not keep:
+            return False
+        save_processed_job(job, status="new")
+        existing_urls.add(job["url"])
+        return True
+
     saved = 0
     search_locations = list(locations) + ["Remote"]
+
+    # Naukri goes through a real browser (Playwright) rather than jobspy —
+    # jobspy's own Naukri scraper hits the API directly and gets a hard 406
+    # every time. See naukri_playwright.py for why, and its expected ~25%
+    # per-request failure rate (already handled there, not here).
+    jobspy_sites = [s for s in sites if s.lower() != "naukri"]
+    if "naukri" in [s.lower() for s in sites]:
+        from naukri_playwright import scrape_naukri
+        try:
+            # Playwright's sync API refuses to run inside an already-running
+            # asyncio loop (which sweep() is) — run it in a worker thread.
+            naukri_jobs = await asyncio.to_thread(scrape_naukri, roles, locations, hours_old)
+        except Exception as e:
+            logger.error("Naukri (Playwright) sweep failed entirely: %s", e)
+            naukri_jobs = []
+        for raw in naukri_jobs:
+            if process_and_save(raw):
+                saved += 1
+
+    if not jobspy_sites:
+        logger.info("Sweep Phase complete. Saved %d new jobs.", saved)
+        return saved
+
     for role in roles:
         for city in search_locations:
             is_remote = city == "Remote"
             try:
                 df = scrape_jobs(
-                    site_name=sites,
+                    site_name=jobspy_sites,
                     search_term=role,
                     google_search_term=f"{role} jobs in {city}, India",
                     location="India" if is_remote else f"{city}, India",
@@ -209,17 +246,8 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
 
             for _, row in df.iterrows():
                 raw = _jobspy_row_to_raw(row.to_dict(), city)
-                job = normalize_job(raw)
-                job["board"] = raw["board"]
-                job["company_size"] = raw["company_size"]
-                if not job["url"] or job["url"] in existing_urls:
-                    continue
-                keep, result = should_keep(job)
-                if not keep:
-                    continue
-                save_processed_job(job, status="new")
-                existing_urls.add(job["url"])
-                saved += 1
+                if process_and_save(raw):
+                    saved += 1
 
             time.sleep(random.uniform(10, 30))
 

@@ -2,11 +2,12 @@
 
 ## What this repo is
 
-A GitHub-Actions-scheduled pipeline: scrape job postings (jobspy) → filter/
-rank → tailor a resume's Summary+Skills sections per top job (Groq → Gemini
-→ static fallback) → email a digest with tailored DOCX resumes attached. No
-auto-apply — the user applies manually. See `README.md` for the full
-architecture and `PROJECT_CONTEXT.md` for current known constraints.
+A GitHub-Actions-scheduled pipeline: scrape job postings (jobspy for Indeed/
+LinkedIn, Playwright for Naukri) → filter/rank → tailor a resume's
+Summary+Skills sections per top job (Groq → Gemini → static fallback) →
+email a digest with tailored DOCX resumes attached. No auto-apply — the
+user applies manually. See `README.md` for the full architecture and
+`PROJECT_CONTEXT.md` for current known constraints.
 
 ## Entry points
 
@@ -38,9 +39,19 @@ architecture and `PROJECT_CONTEXT.md` for current known constraints.
   previously blanked the entire Work Experience/Certifications/Education
   sections silently.
 - Never widen the site list in the GitHub Actions workflows back to
-  zip_recruiter/naukri/google without re-testing live first — they were
-  removed after confirmed (not assumed) failures. See README's "Known
-  limitations".
+  zip_recruiter/google without re-testing live first — they were removed
+  after confirmed (not assumed) failures. See README's "Known limitations".
+- Naukri is a special case: `"naukri"` in the `--sites` list routes through
+  `naukri_playwright.py` (real browser), NOT jobspy — jobspy's own Naukri
+  scraper is hard 406-blocked. `naukri_playwright.py`'s own per-request
+  failure handling is confirmed necessary (~25% of requests get blocked even
+  from a real GitHub Actions runner) — don't "simplify" it away thinking the
+  try/except is dead code.
+- `pipeline.sweep()` runs Naukri scraping via `asyncio.to_thread()` because
+  Playwright's sync API refuses to run inside an already-running asyncio
+  event loop. If you ever touch that call site, keep it wrapped — calling
+  `naukri_playwright.scrape_naukri()` directly from `sweep()` (an `async
+  def`) throws immediately.
 - Secrets (`GMAIL_CREDENTIALS`, `GMAIL_TOKEN_B64`, `GROQ_API_KEY`,
   `GEMINI_API_KEY`) are GitHub Actions secrets only. Never commit
   `credentials.json`/`token.json`/`.env` — already covered by `.gitignore`.
