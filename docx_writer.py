@@ -149,6 +149,13 @@ class ResumeWriter:
 
         )
 
+        # Strip filesystem/artifact-unsafe characters (title text like
+        # "Consultant | Business Analyst | Mumbai" otherwise leaves a bare
+        # "|" surviving as its own whitespace-separated token below, which
+        # breaks GitHub Actions artifact upload and is invalid on Windows).
+        for ch in ("\\", "/", ":", "*", "?", "\"", "<", ">", "|"):
+            text = text.replace(ch, "")
+
         words = text.split()
 
         if len(words) == 1:
