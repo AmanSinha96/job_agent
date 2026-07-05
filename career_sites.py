@@ -30,8 +30,10 @@ watch where it redirects — Workday-hosted boards redirect to
 "wd5"/etc — try a few if the obvious one 404s).
 """
 import re
+import time
 import logging
 import requests
+import concurrent.futures
 from curl_cffi import requests as curl_requests
 
 from job_filters import LOCATIONS
@@ -40,6 +42,33 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
 _TIMEOUT = 20
+
+# curl_cffi's `timeout=` param doesn't reliably bound wall-clock time —
+# confirmed live: a call configured with timeout=20 hung for 195s instead.
+# Standard HTTP client "timeout" semantics are usually a read/idle timeout
+# (time between bytes), not a total-request deadline, so a connection that
+# trickles data slowly (or a CDN that holds it open) can run far longer
+# than the nominal value. A thread-pool future timeout enforces a true
+# wall-clock cap regardless of what's happening inside curl_cffi/libcurl —
+# if the call hasn't returned in time we just give up and move on, even
+# though the orphaned network call may keep running in the background
+# until it eventually times out on its own.
+_WORKDAY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+_HARD_TIMEOUT = 25
+
+# Total time budget for the whole Workday phase across all configured
+# companies in one sweep — see scrape_watchlist() for why this exists.
+# 600s leaves plenty of the frequent workflow's 40-minute job budget for
+# jobspy scraping + resume tailoring + email, which run in the same job.
+WORKDAY_BUDGET_SECONDS = 600
+
+
+def _call_with_hard_timeout(fn, timeout=_HARD_TIMEOUT):
+    future = _WORKDAY_EXECUTOR.submit(fn)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        raise TimeoutError(f"hard wall-clock timeout after {timeout}s")
 
 # Confirmed live 2026-07 — each slug actually returns HTTP 200 with real
 # postings (see conversation for the verification curls). Add more by
@@ -60,14 +89,50 @@ LEVER_COMPANIES = {
     "Zeta": "zeta",
 }
 
-# Confirmed live 2026-07: fractal.ai/careers redirects to fractal.wd1.myworkdayjobs.com/Careers.
-# Commonwealth Bank of Australia has a genuine Bangalore tech/engineering hub
-# (35 India-tagged postings incl. "Staff Data Engineer" confirmed live) —
-# tenant/host/site found via the myworkdayjobs.com links embedded in
-# commbank.com.au/about-us/careers.html.
+# Confirmed live 2026-07 — each tenant/host/site returns HTTP 200 with real
+# India-relevant postings (see conversation for the verification method:
+# WebSearch to find the myworkdayjobs.com link on the company's real careers
+# page, then curl_cffi(impersonate="chrome") to confirm the API + check
+# searchText="India"/city names actually returns something).
+#
+# Checked but deliberately NOT added — confirmed not on Workday: Intuit
+# (TalentBrew/Radancy), Lattice Semiconductor (iCIMS), AMD (iCIMS), Charles
+# Schwab (TalentBrew/iCIMS), eBay (Phenom People — the only "ebay" Workday
+# tenant found belongs to TCGplayer, an unrelated eBay-owned subsidiary),
+# Dell (migrated to Oracle Fusion Cloud Recruiting), IBM (own platform),
+# Infosys/Hexaware (own portals — expected for Indian IT services majors),
+# Cognizant (the only "cognizant"-adjacent tenant is Collaborative
+# Solutions, a Workday-implementation consulting arm it acquired — zero
+# data/analytics roles, all internal Workday-consultant hiring).
+#
+# Checked, on Workday, but NOT added — confirmed real, near-zero India
+# relevance for these target roles: PNC Bank (0 real India postings, only
+# false "IN"/Indiana matches), Netflix (7 India postings, all
+# non-technical Mumbai media/legal roles), Home Depot (0 India presence at
+# all — India results are Indianapolis).
 WORKDAY_COMPANIES = {
     "Fractal": {"tenant": "fractal", "host": "wd1", "site": "Careers"},
     "Commonwealth Bank": {"tenant": "cba", "host": "wd3", "site": "CommBank_Careers"},
+    "NVIDIA": {"tenant": "nvidia", "host": "wd5", "site": "NVIDIAExternalCareerSite"},
+    "Salesforce": {"tenant": "salesforce", "host": "wd12", "site": "External_Career_Site"},
+    "Adobe": {"tenant": "adobe", "host": "wd5", "site": "external_experienced"},
+    "Applied Materials": {"tenant": "amat", "host": "wd1", "site": "External"},
+    "Bank of America": {"tenant": "ghr", "host": "wd1", "site": "Lateral-ba_continuum"},
+    "Morgan Stanley": {"tenant": "ms", "host": "wd5", "site": "External"},
+    "BlackRock": {"tenant": "blackrock", "host": "wd1", "site": "BlackRock_Professional"},
+    "Visa": {"tenant": "visa", "host": "wd5", "site": "Visa"},
+    "Mastercard": {"tenant": "mastercard", "host": "wd1", "site": "CorporateCareers"},
+    "FIS": {"tenant": "fis", "host": "wd5", "site": "SearchJobs"},
+    "Walmart": {"tenant": "walmart", "host": "wd504", "site": "WalmartExternal"},
+    "Target": {"tenant": "target", "host": "wd5", "site": "targetcareers"},
+    "HPE": {"tenant": "hpe", "host": "wd5", "site": "ACJobSite"},
+    "HP Inc": {"tenant": "hp", "host": "wd5", "site": "ExternalCareerSite"},
+    "Equinix": {"tenant": "equinix", "host": "wd1", "site": "External"},
+    "GE Aerospace": {"tenant": "geaerospace", "host": "wd5", "site": "GE_ExternalSite"},
+    "GE Vernova": {"tenant": "gevernova", "host": "wd5", "site": "Vernova_ExternalSite"},
+    "GE HealthCare": {"tenant": "gehc", "host": "wd5", "site": "GEHC_ExternalSite"},
+    "DXC Technology": {"tenant": "dxctechnology", "host": "wd1", "site": "DXCJobs"},
+    "PwC": {"tenant": "pwc", "host": "wd3", "site": "Global_Experienced_Careers"},
 }
 
 # Approximate headcount for company_size_bonus() (see job_filters.py) —
@@ -77,6 +142,12 @@ COMPANY_SIZE_HINTS = {
     "Fractal": 5000, "Groww": 1500, "Postman": 600, "Stripe": 8000,
     "Databricks": 7000, "Twilio": 5000, "CRED": 2000, "Meesho": 5000,
     "Freshworks": 5000, "Zeta": 3000, "Amazon": 1500000, "Commonwealth Bank": 50000,
+    "NVIDIA": 30000, "Salesforce": 70000, "Adobe": 30000, "Applied Materials": 34000,
+    "Bank of America": 215000, "Morgan Stanley": 80000, "BlackRock": 20000,
+    "Visa": 26000, "Mastercard": 33000, "FIS": 55000, "Walmart": 2100000,
+    "Target": 440000, "HPE": 62000, "HP Inc": 50000, "Equinix": 13000,
+    "GE Aerospace": 52000, "GE Vernova": 80000, "GE HealthCare": 51000,
+    "DXC Technology": 130000, "PwC": 370000,
 }
 
 
@@ -154,7 +225,7 @@ def fetch_lever(company, slug):
     return jobs
 
 
-def fetch_workday(company, tenant, host, site, role_filter):
+def fetch_workday(company, tenant, host, site, roles, role_matches):
     # Workday's Cloudflare front blocks plain `requests` by TLS fingerprint
     # (JA3) alone — confirmed live: identical payload/headers, curl and
     # curl_cffi(impersonate="chrome") get HTTP 200, `requests` gets HTTP 400,
@@ -170,59 +241,59 @@ def fetch_workday(company, tenant, host, site, role_filter):
     # not a bug to keep chasing.
     base = f"https://{tenant}.{host}.myworkdayjobs.com"
 
-    def fetch_page(offset):
-        for attempt in range(3):
+    def search(text):
+        for attempt in range(2):
             try:
                 # Page size of 20 is confirmed safe across tenants — some
                 # (Commonwealth Bank's "cba" tenant) hard-reject limit=50
                 # with a 400 even though Fractal's tenant accepts it fine.
-                resp = curl_requests.post(
+                resp = _call_with_hard_timeout(lambda: curl_requests.post(
                     f"{base}/wday/cxs/{tenant}/{site}/jobs",
-                    json={"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": ""},
+                    json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": text},
                     impersonate="chrome", timeout=_TIMEOUT,
-                )
+                ))
                 resp.raise_for_status()
                 return resp.json()
             except Exception as e:
-                logger.warning("Workday fetch attempt %d failed for %s (offset=%d): %s",
-                                attempt + 1, company, offset, e)
+                logger.warning("Workday search attempt %d failed for %s (%r): %s",
+                                attempt + 1, company, text, e)
         return None
 
-    # Paginate through the full listing (capped — a huge employer's board
-    # isn't worth 500 HTTP calls just to find a handful of relevant titles).
-    postings = []
-    offset = 0
-    max_postings = 300
-    while offset < max_postings:
-        page = fetch_page(offset)
+    # Search per role term via Workday's own full-text search instead of
+    # paginating a company's entire catalog and filtering client-side —
+    # some watchlist companies have 2,000-4,500+ total postings (Walmart,
+    # Target, PwC), and blindly paginating all of them per run isn't worth
+    # it just to find a handful of relevant titles. searchText also matches
+    # against description text, not just title, so it's more thorough than
+    # a title-only regex would be — role_matches() below still gates on
+    # title afterward since a fuzzy full-text search returns some noise.
+    postings, seen_paths = [], set()
+    for role in roles:
+        page = search(role)
         if page is None:
-            break
-        batch = page.get("jobPostings", [])
-        if not batch:
-            break
-        postings.extend(batch)
-        # "total" came back as 0 on a later page of a real, populated
-        # listing (CBA's tenant, confirmed live) despite jobPostings being
-        # non-empty — unreliable, so an empty batch is the only trustworthy
-        # stop condition; max_postings is the backstop against a bad company
-        # whose "total" is permanently wrong.
-        offset += len(batch)
+            continue
+        for p in page.get("jobPostings", []):
+            path = p.get("externalPath")
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                postings.append(p)
 
     jobs = []
     for p in postings:
         title = p.get("title", "")
         # Skip the per-job detail fetch (a separate HTTP call) unless the
-        # title alone could plausibly pass role_matches() later — most of a
-        # large employer's postings are irrelevant, no point fetching all.
-        if not role_filter(title):
+        # title itself passes the same role check used everywhere else —
+        # searchText matches against description text too, so a role name
+        # can surface a title that isn't actually that role.
+        if not role_matches(title):
             continue
         path = p.get("externalPath", "")
         description = ""
         try:
             # API detail path (returns JSON) differs from the public browsable
             # URL below — confirmed live: /wday/cxs/{tenant}/{site}{path}.
-            detail = curl_requests.get(f"{base}/wday/cxs/{tenant}/{site}{path}",
-                                        impersonate="chrome", timeout=_TIMEOUT)
+            detail = _call_with_hard_timeout(lambda: curl_requests.get(
+                f"{base}/wday/cxs/{tenant}/{site}{path}", impersonate="chrome", timeout=_TIMEOUT))
             detail.raise_for_status()
             description = _strip_html(detail.json().get("jobPostingInfo", {}).get("jobDescription", ""))
         except Exception as e:
@@ -272,8 +343,27 @@ def scrape_watchlist(roles):
         jobs.extend(fetch_greenhouse(company, slug))
     for company, slug in LEVER_COMPANIES.items():
         jobs.extend(fetch_lever(company, slug))
+
+    # Hard wall-clock budget for the whole Workday phase, independent of
+    # per-call timeouts. Confirmed live: a full 22-company run took 4.4
+    # HOURS (a single curl_cffi call alone hung 195s despite a configured
+    # 20s timeout) — with 22 companies this project scale, even bounded
+    # per-call timeouts compound to something that could still blow past
+    # GitHub Actions' 40-minute job limit and fail the ENTIRE scheduled run
+    # (all sources, not just watchlist) if several companies are flaky at
+    # once. Once the budget's spent, remaining companies are skipped for
+    # this run — they'll get picked up next cycle instead.
+    workday_deadline = time.time() + WORKDAY_BUDGET_SECONDS
+    skipped = []
     for company, cfg in WORKDAY_COMPANIES.items():
-        jobs.extend(fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], role_matches))
+        if time.time() >= workday_deadline:
+            skipped.append(company)
+            continue
+        jobs.extend(fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches))
+    if skipped:
+        logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
+                        WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
+
     for role in roles:
         jobs.extend(fetch_amazon(role))
 
