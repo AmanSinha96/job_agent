@@ -10,9 +10,9 @@ from database import save_job, get_connection
 from ats_detector import detect_ats
 from resume_scorer import score_resume
 from job_filters import (
-    TARGET_ROLES, ROLE_MATCH_TERMS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
-    BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES, MID_COMPANY_MIN_EMPLOYEES,
-    MIN_EXPERIENCE_YEARS,
+    TARGET_ROLES, ROLE_WORD_GROUPS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
+    BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES, BIG_COMPANY_BONUS,
+    MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS, MIN_EXPERIENCE_YEARS,
 )
 from config import PROXIES, MIN_SALARY_LPA
 
@@ -97,8 +97,20 @@ def salary_to_lpa(salary_text: str | None) -> float | None:
 # --- Pipeline logic ---
 
 def role_matches(title: str):
-    title = title.lower()
-    return any(role.lower() in title for role in ROLE_MATCH_TERMS)
+    # Word-boundary match, not raw substring — short tokens like "ai"/"bi"
+    # otherwise match inside unrelated words ("airflow" contains "ai",
+    # "cabin" would contain "bi"). Confirmed live: "Senior Data Engineer
+    # (AWS EMR, Spark & Airflow)" was false-matching the {"ai","engineer"}
+    # group purely because "airflow" contains "ai" as a substring.
+    # Underscore is treated as a word character by regex \b, but real
+    # postings use it as an informal separator ("Data Analyst_3+yrs",
+    # "AI Engineer_ MLOps") — normalize it to a space first or those
+    # wouldn't get a boundary where one's clearly intended.
+    title = title.lower().replace("_", " ")
+    return any(
+        all(re.search(r"\b" + re.escape(word) + r"\b", title) for word in group)
+        for group in ROLE_WORD_GROUPS
+    )
 
 def location_matches(location: str):
     location = location.lower()
@@ -114,9 +126,9 @@ def parse_company_size(size_text) -> int:
 
 def company_size_bonus(employees: int) -> int:
     if employees >= BIG_COMPANY_MIN_EMPLOYEES:
-        return 15
+        return BIG_COMPANY_BONUS
     if employees >= MID_COMPANY_MIN_EMPLOYEES:
-        return 7
+        return MID_COMPANY_BONUS
     return 0
 
 def compute_confidence(job: dict):
