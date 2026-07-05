@@ -127,7 +127,7 @@ jobs:
           EXPERIENCE_LEVEL: ${{ secrets.EXPERIENCE_LEVEL }}
 
         run: |
-          python cloud_run.py --sites indeed --hours-old ${{ steps.hours.outputs.value }}
+          python cloud_run.py --sites indeed,watchlist --hours-old ${{ steps.hours.outputs.value }}
 
       # -------------------------------------------------------
       # Upload generated resumes

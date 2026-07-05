@@ -224,7 +224,11 @@ def main(sites: list[str], hours_old: int):
     logger.info("Sweep complete: %d new jobs saved", saved)
     check_zero_result_streak(sites, saved)
 
-    jobs = [dict(row) for row in database.get_top_jobs()]
+    # database.get_top_jobs() defaults to limit=30 — pass pipeline's actual
+    # selection size explicitly so it can't silently drift out of sync again
+    # (confirmed live: it had, only 30 of 40 selected top_pick jobs were
+    # ever being fetched here before this fix).
+    jobs = [dict(row) for row in database.get_top_jobs(limit=pipeline.SELECT_TOP_N)]
     logger.info("%d top-ranked jobs to tailor", len(jobs))
 
     if not jobs:

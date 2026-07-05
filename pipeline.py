@@ -290,7 +290,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
     # jobspy's own Naukri scraper hits the API directly and gets a hard 406
     # every time. See naukri_playwright.py for why, and its expected ~25%
     # per-request failure rate (already handled there, not here).
-    jobspy_sites = [s for s in sites if s.lower() != "naukri"]
+    jobspy_sites = [s for s in sites if s.lower() not in ("naukri", "watchlist")]
     if "naukri" in [s.lower() for s in sites]:
         from naukri_playwright import scrape_naukri
         try:
@@ -301,6 +301,20 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
             logger.error("Naukri (Playwright) sweep failed entirely: %s", e)
             naukri_jobs = []
         for raw in naukri_jobs:
+            if process_and_save(raw):
+                saved += 1
+
+    if "watchlist" in [s.lower() for s in sites]:
+        # Direct company-career-site sweep (Greenhouse/Lever/Workday APIs +
+        # Amazon's own jobs API) — catches companies like Fractal that don't
+        # cross-post to Indeed/LinkedIn/Naukri. See career_sites.py.
+        from career_sites import scrape_watchlist
+        try:
+            watchlist_jobs = await asyncio.to_thread(scrape_watchlist, roles)
+        except Exception as e:
+            logger.error("Watchlist sweep failed entirely: %s", e)
+            watchlist_jobs = []
+        for raw in watchlist_jobs:
             if process_and_save(raw):
                 saved += 1
 

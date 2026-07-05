@@ -28,12 +28,25 @@ def already_exists(url: str):
     conn.close()
     return existing is not None
 
+# Raw substring matching let short/common keywords match inside unrelated
+# words — "ios" inside "curiosity", "intern" inside "internal", "sales"
+# inside "salesforce". Rarely surfaced with jobspy's short descriptions, but
+# broke badly against full-length Greenhouse/Lever JD text (boilerplate
+# "About Us"/benefits/EEO sections), e.g. "salesforce" mentioned in a tech
+# stack list silently blocking an otherwise-qualifying posting. Same
+# word-boundary fix as pipeline.role_matches() — underscore normalized to a
+# space first since \b treats "_" as a word character.
+_BOUNDARY_CACHE = {}
+
+def _boundary_pattern(phrase):
+    if phrase not in _BOUNDARY_CACHE:
+        _BOUNDARY_CACHE[phrase] = re.compile(r"\b" + re.escape(phrase) + r"\b")
+    return _BOUNDARY_CACHE[phrase]
+
 def keyword_matches(text: str, keywords: list[str]):
-    text = text.lower()
-    return [kw for kw in keywords if kw in text]
+    text = text.lower().replace("_", " ")
+    return [kw for kw in keywords if _boundary_pattern(kw).search(text)]
 
 def blocked_job(text: str, blocked_keywords: set[str]):
-    text = text.lower()
-    for kw in blocked_keywords:
-        if kw in text: return True
-    return False
+    text = text.lower().replace("_", " ")
+    return any(_boundary_pattern(kw).search(text) for kw in blocked_keywords)
