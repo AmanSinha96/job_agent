@@ -12,7 +12,7 @@ import argparse
 import asyncio
 import logging
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pipeline
 import database
@@ -25,6 +25,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("cloud_run")
 
 TAILOR_TOP_N = 15
+
+# Fixed +5:30 offset rather than zoneinfo("Asia/Kolkata") — India has no DST
+# so the offset never changes, and this avoids depending on the GitHub
+# Actions runner having the IANA tz database installed.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def ist_str(dt: datetime, fmt: str = "%Y-%m-%d %I:%M %p IST") -> str:
+    return dt.astimezone(IST).strftime(fmt)
 
 
 def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]]:
@@ -51,8 +60,8 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
 
 
 def build_digest_html(tailored: list[dict], other_matches: list[dict], total_found: int, cycle_start: datetime) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %I:%M %p UTC")
-    start_str = cycle_start.strftime("%Y-%m-%d %I:%M %p UTC")
+    now = ist_str(datetime.now(timezone.utc))
+    start_str = ist_str(cycle_start)
 
     def matched_keywords(j, limit=6):
         # DB stores this as a comma-string; build_job_specific_resume()'s
@@ -180,7 +189,7 @@ def notify_zero_results(sites: list[str], streak: int):
     usually means it's IP-blocked/rate-limited, not that postings genuinely
     dried up — and since nothing raises an exception, this would otherwise
     go unnoticed indefinitely."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = ist_str(datetime.now(timezone.utc), "%Y-%m-%d %H:%M IST")
     html = f"""
     <html><body style="font-family:sans-serif;color:#222;max-width:700px;margin:auto">
     <h2 style="color:#e65100">👀 No new jobs from {', '.join(sites)} for {streak} cycles in a row</h2>
@@ -245,7 +254,7 @@ def main(sites: list[str], hours_old: int):
     attachments = [j["docx_path"] for j in tailored if j.get("docx_path")]
 
     sent = send_email_report(
-        subject=f"Job Agent Report — {cycle_start.strftime('%Y-%m-%d')}",
+        subject=f"Job Agent Report — {ist_str(cycle_start, '%Y-%m-%d')}",
         html_body=html,
         notify_email=NOTIFY_EMAIL,
         credentials_file=GMAIL_CREDENTIALS_FILE,
@@ -270,7 +279,7 @@ def notify_failure(sites: list[str], hours_old: int, exc: Exception):
     silent for a week. If the email send itself fails too, this just logs —
     the GitHub Actions run still shows red in the Actions tab either way."""
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-4000:]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = ist_str(datetime.now(timezone.utc), "%Y-%m-%d %H:%M IST")
     html = f"""
     <html><body style="font-family:sans-serif;color:#222;max-width:700px;margin:auto">
     <h2 style="color:#c62828">⚠️ Job Agent cycle FAILED — {now}</h2>
