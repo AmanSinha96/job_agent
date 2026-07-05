@@ -5,17 +5,22 @@ name: Job Agent — Indeed Sweep
 # for details. Re-add them in the "Run cloud pipeline" step's --sites arg
 # if/when they start working again.
 #
-# 4 runs/day at IST 08:30/13:30/17:30/21:30 (UTC 03:00/08:00/12:00/16:00).
+# 4 runs/day at IST 08:41/13:41/17:41/21:41 (UTC 03:11/08:11/12:11/16:11).
+# Minute shifted off :00 to :11 — GitHub Actions scheduled workflows queue
+# behind everyone else's crons at round hour marks, and real run history
+# showed delays growing to 2-4 hours by evening; an off-beat minute avoids
+# the worst of that contention (doesn't guarantee exact-time delivery,
+# nothing on the free tier can, but should meaningfully cut the delay).
 # --hours-old is set per-trigger below to exactly cover the gap since this
 # workflow's own previous run (floor 4h) — no gap in coverage, no need to
 # guess a single fixed value.
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # IST 08:30, covers last 11h
-    - cron: "0 8 * * *"   # IST 13:30, covers last 5h
-    - cron: "0 12 * * *"  # IST 17:30, covers last 4h
-    - cron: "0 16 * * *"  # IST 21:30, covers last 4h
+    - cron: "11 3 * * *"   # IST 08:41, covers last 11h
+    - cron: "11 8 * * *"   # IST 13:41, covers last 5h
+    - cron: "11 12 * * *"  # IST 17:41, covers last 4h
+    - cron: "11 16 * * *"  # IST 21:41, covers last 4h
   workflow_dispatch:
 
 jobs:
@@ -93,10 +98,10 @@ jobs:
         id: hours
         run: |
           case "${{ github.event.schedule }}" in
-            "0 3 * * *") echo "value=11" >> "$GITHUB_OUTPUT" ;;
-            "0 8 * * *") echo "value=5" >> "$GITHUB_OUTPUT" ;;
-            "0 12 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
-            "0 16 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "11 3 * * *") echo "value=11" >> "$GITHUB_OUTPUT" ;;
+            "11 8 * * *") echo "value=5" >> "$GITHUB_OUTPUT" ;;
+            "11 12 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "11 16 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
             *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
           esac
 

@@ -3,15 +3,18 @@ name: Job Agent — LinkedIn Sweep
 # LinkedIn is scraped less often than the other boards to avoid the shared
 # GitHub Actions runner IP pool getting flagged/blocked.
 #
-# 3 runs/day at IST 07:30/14:30/19:30 (UTC 02:00/09:00/14:00). --hours-old is
-# set per-trigger below to exactly cover the gap since this workflow's own
-# previous run (floor 4h).
+# 3 runs/day at IST 07:41/14:41/19:41 (UTC 02:11/09:11/14:11). Minute
+# shifted off :00 to :11 — GitHub Actions scheduled workflows queue behind
+# everyone else's crons at round hour marks, and real run history showed
+# delays growing to 2-4 hours by evening; an off-beat minute avoids the
+# worst of that contention. --hours-old is set per-trigger below to exactly
+# cover the gap since this workflow's own previous run (floor 4h).
 
 on:
   schedule:
-    - cron: "0 2 * * *"   # IST 07:30, covers last 12h
-    - cron: "0 9 * * *"   # IST 14:30, covers last 7h
-    - cron: "0 14 * * *"  # IST 19:30, covers last 5h
+    - cron: "11 2 * * *"   # IST 07:41, covers last 12h
+    - cron: "11 9 * * *"   # IST 14:41, covers last 7h
+    - cron: "11 14 * * *"  # IST 19:41, covers last 5h
   workflow_dispatch:
 
 jobs:
@@ -89,9 +92,9 @@ jobs:
         id: hours
         run: |
           case "${{ github.event.schedule }}" in
-            "0 2 * * *") echo "value=12" >> "$GITHUB_OUTPUT" ;;
-            "0 9 * * *") echo "value=7" >> "$GITHUB_OUTPUT" ;;
-            "0 14 * * *") echo "value=5" >> "$GITHUB_OUTPUT" ;;
+            "11 2 * * *") echo "value=12" >> "$GITHUB_OUTPUT" ;;
+            "11 9 * * *") echo "value=7" >> "$GITHUB_OUTPUT" ;;
+            "11 14 * * *") echo "value=5" >> "$GITHUB_OUTPUT" ;;
             *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
           esac
 

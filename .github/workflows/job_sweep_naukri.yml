@@ -6,17 +6,21 @@ name: Job Agent — Naukri Sweep
 # intermittent 403 — handled gracefully in naukri_playwright.py, not a
 # reason to panic if the job count looks lower than expected some cycles.
 #
-# 5 runs/day at IST 00:30/09:30/12:30/16:30/18:30 (UTC 19:00/04:00/07:00/
-# 11:00/13:00). --hours-old is set per-trigger below to exactly cover the
-# gap since this workflow's own previous run (floor 4h).
+# 5 runs/day at IST 00:41/09:41/12:41/16:41/18:41 (UTC 19:11/04:11/07:11/
+# 11:11/13:11). Minute shifted off :00 to :11 — GitHub Actions scheduled
+# workflows queue behind everyone else's crons at round hour marks, and
+# real run history showed delays growing to 2-4 hours by evening; an
+# off-beat minute avoids the worst of that contention. --hours-old is set
+# per-trigger below to exactly cover the gap since this workflow's own
+# previous run (floor 4h).
 
 on:
   schedule:
-    - cron: "0 19 * * *"  # IST 00:30, covers last 6h
-    - cron: "0 4 * * *"   # IST 09:30, covers last 9h
-    - cron: "0 7 * * *"   # IST 12:30, covers last 4h
-    - cron: "0 11 * * *"  # IST 16:30, covers last 4h
-    - cron: "0 13 * * *"  # IST 18:30, covers last 4h
+    - cron: "11 19 * * *"  # IST 00:41, covers last 6h
+    - cron: "11 4 * * *"   # IST 09:41, covers last 9h
+    - cron: "11 7 * * *"   # IST 12:41, covers last 4h
+    - cron: "11 11 * * *"  # IST 16:41, covers last 4h
+    - cron: "11 13 * * *"  # IST 18:41, covers last 4h
   workflow_dispatch:
 
 jobs:
@@ -92,11 +96,11 @@ jobs:
         id: hours
         run: |
           case "${{ github.event.schedule }}" in
-            "0 19 * * *") echo "value=6" >> "$GITHUB_OUTPUT" ;;
-            "0 4 * * *") echo "value=9" >> "$GITHUB_OUTPUT" ;;
-            "0 7 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
-            "0 11 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
-            "0 13 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "11 19 * * *") echo "value=6" >> "$GITHUB_OUTPUT" ;;
+            "11 4 * * *") echo "value=9" >> "$GITHUB_OUTPUT" ;;
+            "11 7 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "11 11 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
+            "11 13 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
             *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
           esac
 
