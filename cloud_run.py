@@ -66,9 +66,25 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     def salary_display(j):
         return j.get("salary") or "—"
 
+    def match_display(j):
+        # confidence is the PRE-tailoring score (keyword match + ATS/company
+        # bonus) — the one that actually varies and is what got this job
+        # ranked/selected. resume_score is computed AFTER tailoring, and
+        # tailoring works by injecting any missing JD keyword straight into
+        # the Skills section — so resume_score is ~100% almost by
+        # construction, not a meaningful "how good a match" signal on its own.
+        raw_pct = f"{round(j.get('confidence', 0) * 100)}%" if j.get("confidence") is not None else "—"
+        if "resume_score" in j:
+            return f"{raw_pct} match, tailored ✓ — {matched_keywords(j)}"
+        return f"{raw_pct} — {matched_keywords(j)}"
+
+    def resume_file(j):
+        path = j.get("docx_path")
+        return path.replace("\\", "/").rsplit("/", 1)[-1] if path else "—"
+
     def tailored_rows():
         if not tailored:
-            return "<tr><td colspan='6' style='color:#888'>None this cycle</td></tr>"
+            return "<tr><td colspan='7' style='color:#888'>None this cycle</td></tr>"
         rows = ""
         for j in tailored:
             rows += (
@@ -78,17 +94,17 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
                 f"<td>{j.get('location','')}</td>"
                 f"<td>{salary_display(j)}</td>"
                 f"<td>{j.get('board','')}</td>"
-                f"<td>{j.get('resume_score', 0)}% — {matched_keywords(j)}</td>"
+                f"<td style='font-size:12px'>{resume_file(j)}</td>"
+                f"<td>{match_display(j)}</td>"
                 f"</tr>"
             )
         return rows
 
     def other_rows():
         if not other_matches:
-            return "<tr><td colspan='6' style='color:#888'>None this cycle</td></tr>"
+            return "<tr><td colspan='7' style='color:#888'>None this cycle</td></tr>"
         rows = ""
         for j in other_matches:
-            match_pct = f"{round(j.get('confidence', 0) * 100)}%" if j.get("confidence") is not None else "—"
             rows += (
                 f"<tr>"
                 f"<td><a href='{j.get('url','')}' style='color:#e65100'>{j.get('title','')}</a></td>"
@@ -96,7 +112,8 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
                 f"<td>{j.get('location','')}</td>"
                 f"<td>{salary_display(j)}</td>"
                 f"<td>{j.get('board','')}</td>"
-                f"<td>{match_pct} — {matched_keywords(j)}</td>"
+                f"<td style='font-size:12px'>—</td>"
+                f"<td>{match_display(j)}</td>"
                 f"</tr>"
             )
         return rows
@@ -124,11 +141,12 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     </table>
 
     <h3 style="color:#2e7d32">✅ Tailored & Ready to Apply ({len(tailored)})</h3>
-    <p style="color:#555;font-size:13px">Tailored resume for each is attached — download and apply directly.</p>
+    <p style="color:#555;font-size:13px">Tailored resume for each is attached — the "Resume File" column below matches the attachment filename, so it's easy to find the right one.</p>
     <table style="{table_style}">
       <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th>
           <th style="{th_style}">Location</th><th style="{th_style}">Salary</th>
-          <th style="{th_style}">Source</th><th style="{th_style}">Match / Why</th></tr>
+          <th style="{th_style}">Source</th><th style="{th_style}">Resume File</th>
+          <th style="{th_style}">Match / Why</th></tr>
       {tailored_rows()}
     </table>
 
@@ -137,7 +155,8 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     <table style="{table_style}">
       <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th>
           <th style="{th_style}">Location</th><th style="{th_style}">Salary</th>
-          <th style="{th_style}">Source</th><th style="{th_style}">Match / Why</th></tr>
+          <th style="{th_style}">Source</th><th style="{th_style}">Resume File</th>
+          <th style="{th_style}">Match / Why</th></tr>
       {other_rows()}
     </table>
 
