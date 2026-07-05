@@ -327,6 +327,28 @@ def fetch_amazon(role):
     return jobs
 
 
+# Consecutive zero-raw-result cycles before flagging a watchlist company as
+# newly stale — i.e. its API returned a genuine response but with 0 postings
+# at all, not "0 postings matching our roles/locations". Confirmed this
+# actually happens in practice: Dell migrated off Workday to Oracle Fusion
+# Cloud mid-project and would otherwise go silently, permanently stale —
+# nothing raises an exception, it just quietly contributes nothing forever.
+WATCHLIST_STALE_THRESHOLD = 5
+
+
+def _track_company_health(company, raw_count):
+    """Returns True the cycle a company first crosses
+    WATCHLIST_STALE_THRESHOLD consecutive zero-result runs."""
+    import database  # deferred: keeps career_sites.py's non-DB functions importable standalone
+    key = f"watchlist_zero_streak:{company}"
+    if raw_count > 0:
+        database.set_meta(key, 0)
+        return False
+    streak = int(database.get_meta(key, 0) or 0) + 1
+    database.set_meta(key, streak)
+    return streak == WATCHLIST_STALE_THRESHOLD
+
+
 def scrape_watchlist(roles):
     """Sweep every configured Greenhouse/Lever/Workday company plus Amazon's
     own jobs API. Runs synchronously (plain HTTP, no browser) — call via
@@ -335,14 +357,24 @@ def scrape_watchlist(roles):
     No hours_old filtering: these APIs don't reliably expose posting age,
     and the watchlist is small/curated enough that re-fetching everything
     each run and relying on the existing already_exists() URL dedup in
-    pipeline.sweep() is simpler than building per-source staleness logic."""
+    pipeline.sweep() is simpler than building per-source staleness logic.
+
+    Returns (jobs, newly_stale_companies) — the second element is normally
+    empty; when non-empty, the caller should surface it (see
+    cloud_run.notify_stale_watchlist_companies())."""
     from pipeline import role_matches  # deferred: pipeline imports this module
 
-    jobs = []
+    jobs, newly_stale = [], []
+
+    def track(company, company_jobs):
+        jobs.extend(company_jobs)
+        if _track_company_health(company, len(company_jobs)):
+            newly_stale.append(company)
+
     for company, slug in GREENHOUSE_COMPANIES.items():
-        jobs.extend(fetch_greenhouse(company, slug))
+        track(company, fetch_greenhouse(company, slug))
     for company, slug in LEVER_COMPANIES.items():
-        jobs.extend(fetch_lever(company, slug))
+        track(company, fetch_lever(company, slug))
 
     # Hard wall-clock budget for the whole Workday phase, independent of
     # per-call timeouts. Confirmed live: a full 22-company run took 4.4
@@ -359,7 +391,9 @@ def scrape_watchlist(roles):
         if time.time() >= workday_deadline:
             skipped.append(company)
             continue
-        jobs.extend(fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches))
+        # Not health-tracked when skipped for budget — that's a resource
+        # constraint, not the company itself being broken.
+        track(company, fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches))
     if skipped:
         logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
@@ -373,4 +407,7 @@ def scrape_watchlist(roles):
     logger.info("Watchlist sweep fetched %d raw postings across %d companies, %d India-relevant.",
                 total_fetched, len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES) + 1,
                 len(jobs))
-    return jobs
+    if newly_stale:
+        logger.warning("Watchlist companies newly stale (%d+ zero-result cycles): %s",
+                        WATCHLIST_STALE_THRESHOLD, ", ".join(newly_stale))
+    return jobs, newly_stale

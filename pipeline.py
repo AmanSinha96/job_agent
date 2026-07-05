@@ -284,6 +284,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
         return True
 
     saved = 0
+    stale_watchlist_companies = []
     search_locations = list(locations) + ["Remote"]
 
     # Naukri goes through a real browser (Playwright) rather than jobspy —
@@ -310,7 +311,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
         # cross-post to Indeed/LinkedIn/Naukri. See career_sites.py.
         from career_sites import scrape_watchlist
         try:
-            watchlist_jobs = await asyncio.to_thread(scrape_watchlist, roles)
+            watchlist_jobs, stale_watchlist_companies = await asyncio.to_thread(scrape_watchlist, roles)
         except Exception as e:
             logger.error("Watchlist sweep failed entirely: %s", e)
             watchlist_jobs = []
@@ -320,7 +321,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
 
     if not jobspy_sites:
         logger.info("Sweep Phase complete. Saved %d new jobs.", saved)
-        return saved
+        return saved, stale_watchlist_companies
 
     for role in roles:
         for city in search_locations:
@@ -354,7 +355,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
             time.sleep(random.uniform(10, 30))
 
     logger.info("Sweep Phase complete. Saved %d new jobs.", saved)
-    return saved
+    return saved, stale_watchlist_companies
 
 def rank():
     """Phase 2: Rank 'new' jobs."""
@@ -400,8 +401,8 @@ def select():
 
 async def run(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=LOCATIONS):
     """Main workflow orchestration."""
-    saved = await sweep(sites, hours_old, roles, locations)
+    saved, stale_watchlist_companies = await sweep(sites, hours_old, roles, locations)
     rank()
     select()
     logger.info("Pipeline complete.")
-    return saved
+    return saved, stale_watchlist_companies

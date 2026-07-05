@@ -211,6 +211,37 @@ def notify_zero_results(sites: list[str], streak: int):
         logger.error("Could not send zero-result streak notification: %s", e)
 
 
+def notify_stale_watchlist_companies(companies: list[str]):
+    """A watchlist company (career_sites.py) returning genuinely zero
+    postings for several cycles in a row usually means its ATS
+    tenant/slug/API broke — e.g. it migrated to a different platform
+    (confirmed live: Dell moved off Workday to Oracle Fusion Cloud) — not
+    that the company stopped hiring entirely. Nothing raises an exception
+    for this, so without this alert it would go unnoticed indefinitely."""
+    now = ist_str(datetime.now(timezone.utc), "%Y-%m-%d %H:%M IST")
+    html = f"""
+    <html><body style="font-family:sans-serif;color:#222;max-width:700px;margin:auto">
+    <h2 style="color:#e65100">🔧 Watchlist companies may need re-checking: {', '.join(companies)}</h2>
+    <p style="color:#555">As of {now}. These companies in career_sites.py's Greenhouse/Lever/Workday
+    watchlist have returned zero postings for several cycles in a row — usually means the
+    company changed ATS platform, or its tenant/slug/API config broke, not that it stopped
+    hiring. Worth re-verifying each one's config directly.</p>
+    </body></html>
+    """
+    try:
+        sent = send_email_report(
+            subject=f"🔧 Job Agent: watchlist companies may be stale — {', '.join(companies)}",
+            html_body=html,
+            notify_email=NOTIFY_EMAIL,
+            credentials_file=GMAIL_CREDENTIALS_FILE,
+            token_file=GMAIL_TOKEN_FILE,
+            scopes=GMAIL_SCOPES,
+        )
+        logger.info("Stale-watchlist notification sent." if sent else "Stale-watchlist notification send returned False.")
+    except Exception as e:
+        logger.error("Could not send stale-watchlist notification: %s", e)
+
+
 def check_zero_result_streak(sites: list[str], saved: int):
     key = f"zero_result_streak:{','.join(sorted(sites))}"
     if saved > 0:
@@ -229,9 +260,11 @@ def main(sites: list[str], hours_old: int):
     database.init_db()
 
     logger.info("Sweep: sites=%s hours_old=%s", sites, hours_old)
-    saved = asyncio.run(pipeline.run(sites, hours_old))
+    saved, stale_watchlist_companies = asyncio.run(pipeline.run(sites, hours_old))
     logger.info("Sweep complete: %d new jobs saved", saved)
     check_zero_result_streak(sites, saved)
+    if stale_watchlist_companies:
+        notify_stale_watchlist_companies(stale_watchlist_companies)
 
     # database.get_top_jobs() defaults to limit=30 — pass pipeline's actual
     # selection size explicitly so it can't silently drift out of sync again
