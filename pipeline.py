@@ -47,34 +47,38 @@ def extract_salary_lpa(text: str):
                 pass
     return None
 
-def extract_min_experience_years(text: str) -> int | None:
-    """Best-effort extraction of the LOWER bound of a stated experience
-    requirement ("5-8 years" -> 5, "6+ years" -> 6, "minimum 5 years" -> 5).
-    Range pattern must be checked first: a bare '\\d+ years?' regex applied to
-    "5-8 years" matches "8" (the number immediately before "years"), not the
-    intended lower bound "5"."""
+def extract_experience_range(text: str) -> tuple[int, int] | None:
+    """Best-effort extraction of a stated experience requirement as
+    (lower, upper) bounds — "5-8 years" -> (5, 8), "6+ years" -> (6, 6),
+    "minimum 5 years" -> (5, 5). Range pattern must be checked first: a
+    bare '\\d+ years?' regex applied to "5-8 years" matches "8" (the number
+    immediately before "years"), not the intended lower bound "5"."""
     text = text.lower()
 
     m = re.search(r"(\d+)\s*[-–to]+\s*(\d+)\+?\s*(?:years?|yrs?)", text)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)), int(m.group(2))
 
     m = re.search(r"(\d+)\+\s*(?:years?|yrs?)", text)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)), int(m.group(1))
 
     m = re.search(r"(?:minimum|min\.?|at least)\s*(\d+)\s*(?:years?|yrs?)", text)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)), int(m.group(1))
 
     m = re.search(r"(\d+)\s*(?:years?|yrs?)", text)
     if m:
-        return int(m.group(1))
+        return int(m.group(1)), int(m.group(1))
 
     return None
 
 def salary_to_lpa(salary_text: str | None) -> float | None:
-    """Parse a salary string into an approximate lower-bound LPA figure.
+    """Parse a salary string into an approximate UPPER-bound LPA figure —
+    a "15-25 LPA" range means a strong candidate can plausibly land at 25,
+    so the ceiling (not the floor) is what should be compared against a
+    minimum-salary requirement; using the floor rejected ranges that
+    clearly reach the target further up.
     Naukri text is already labeled in Lacs ("13-23 Lacs PA"); jobspy-sourced
     strings are raw annual rupee amounts (already annualized in
     _salary_string() below) with no such label — divide by 100,000."""
@@ -85,10 +89,10 @@ def salary_to_lpa(salary_text: str | None) -> float | None:
     if not numbers:
         return None
     if "lac" in text or "lakh" in text or "lpa" in text:
-        return min(numbers)
+        return max(numbers)
     if "inr" not in text and any(c.isalpha() for c in text.replace("inr", "")):
         return None  # non-INR currency — not comparable without FX conversion
-    return min(numbers) / 100000
+    return max(numbers) / 100000
 
 # --- Pipeline logic ---
 
@@ -156,17 +160,21 @@ def should_keep(job: dict):
     if not job["url"]: return False, "missing_url"
 
     # 6. Experience floor — candidate is 6+ years, don't surface junior/
-    # mid-junior postings. Only rejects when a number is actually stated;
-    # JDs that don't mention years at all aren't penalized for silence.
-    min_years = extract_min_experience_years(text)
-    if min_years is not None and min_years < MIN_EXPERIENCE_YEARS:
-        return False, f"experience_too_low: {min_years}y stated, need {MIN_EXPERIENCE_YEARS}y+"
+    # mid-junior postings. Checks the UPPER bound of a stated range: a
+    # "3-8 years" posting clearly still fits a 6-year candidate even though
+    # its floor is below 5 — only reject when even the ceiling doesn't
+    # reach it (e.g. "0-3 years"). JDs that don't mention years at all
+    # aren't penalized for silence.
+    exp_range = extract_experience_range(text)
+    if exp_range is not None and exp_range[1] < MIN_EXPERIENCE_YEARS:
+        return False, f"experience_too_low: {exp_range[0]}-{exp_range[1]}y stated, need {MIN_EXPERIENCE_YEARS}y+"
 
-    # 7. Salary floor — only rejects when a salary is actually mentioned and
-    # clearly parses below the floor; unlisted salary never blocks a job.
+    # 7. Salary floor — same upper-bound logic: a "15-25 LPA" posting can
+    # plausibly land at 25 for a strong candidate, so only reject when the
+    # ceiling itself is below the floor. Unlisted salary never blocks a job.
     salary_lpa = salary_to_lpa(job.get("salary"))
     if salary_lpa is not None and salary_lpa < MIN_SALARY_LPA:
-        return False, f"salary_below_floor: {salary_lpa} LPA, need {MIN_SALARY_LPA}+"
+        return False, f"salary_below_floor: ceiling {salary_lpa} LPA, need {MIN_SALARY_LPA}+"
 
     # Re-calculate confidence
     confidence = min(len(matches) * 15, 100)
@@ -298,7 +306,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
                     google_search_term=f"{role} jobs in {city}, India",
                     location="India" if is_remote else f"{city}, India",
                     is_remote=is_remote,
-                    results_wanted=15,
+                    results_wanted=40,
                     hours_old=hours_old,
                     country_indeed="India",
                     linkedin_fetch_description=True,
