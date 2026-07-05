@@ -177,6 +177,35 @@ jobs:
             echo "Nothing to commit."
           else
             git commit -m "chore: update cache [skip ci]"
-            git push
+
+            # Plain `git push` was silently losing this commit whenever
+            # main had moved since checkout (another workflow's commit, or
+            # a manual push) — confirmed live: data/jobs.db had ZERO
+            # commits in real history despite running for days, because
+            # this step has no pull/rebase and continue-on-error swallowed
+            # every rejected push. Cross-cycle job dedup was silently not
+            # persisting as a result. Retry with a rebase onto the latest
+            # main; jobs.db is a binary SQLite file so a real merge isn't
+            # possible on conflict — `-X ours` keeps this run's freshly
+            # scraped state, which loses whatever a concurrent run added
+            # that this run doesn't know about, but that's a rare, minor
+            # loss next to the previous near-100% silent failure rate.
+            pushed=false
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=true
+                break
+              fi
+              echo "Push rejected (attempt $attempt/3) — fetching and rebasing onto latest main..."
+              git fetch origin main
+              if ! git rebase -X ours origin/main; then
+                echo "Rebase conflict outside jobs.db/cache files — aborting this cycle's commit."
+                git rebase --abort
+                break
+              fi
+            done
+            if [ "$pushed" != "true" ]; then
+              echo "::warning::Could not push updated data/jobs.db after 3 attempts — this cycle's dedup state was not persisted."
+            fi
           fi
         continue-on-error: true
