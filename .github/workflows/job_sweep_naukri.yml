@@ -101,7 +101,7 @@ jobs:
             "11 7 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
             "11 11 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
             "11 13 * * *") echo "value=4" >> "$GITHUB_OUTPUT" ;;
-            *) echo "value=24" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — generous default
+            *) echo "value=4" >> "$GITHUB_OUTPUT" ;;  # manual workflow_dispatch — last 4h from trigger time, for on-demand checks
           esac
 
       # -------------------------------------------------------
