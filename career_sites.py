@@ -34,6 +34,7 @@ import time
 import logging
 import requests
 import concurrent.futures
+from datetime import datetime, timezone
 from curl_cffi import requests as curl_requests
 
 from job_filters import LOCATIONS
@@ -174,7 +175,64 @@ def _is_india_relevant(location):
     return "india" in loc or any(city.lower() in loc for city in LOCATIONS)
 
 
-def _raw(title, company, location, description, url, board):
+def _hours_since(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+
+
+def _greenhouse_age_hours(job):
+    # first_published is the original posting date; updated_at can be recent
+    # even for an old posting if the employer just edited the JD text, which
+    # would wrongly make a stale posting look fresh.
+    ts = job.get("first_published") or job.get("updated_at")
+    if not ts:
+        return None
+    try:
+        return _hours_since(datetime.fromisoformat(ts))
+    except Exception:
+        return None
+
+
+def _lever_age_hours(job):
+    ts = job.get("createdAt")
+    if not ts:
+        return None
+    try:
+        return _hours_since(datetime.fromtimestamp(ts / 1000, tz=timezone.utc))
+    except Exception:
+        return None
+
+
+def _workday_age_hours(posted_on):
+    # Confirmed live formats: "Posted Today", "Posted Yesterday",
+    # "Posted N Days Ago", "Posted 30+ Days Ago" (open-ended — treated as
+    # exactly 30 days, which is already far past any real hours_old ceiling
+    # used in this project, so the imprecision doesn't matter).
+    if not posted_on:
+        return None
+    text = posted_on.lower().strip()
+    if "today" in text:
+        return 0.0
+    if "yesterday" in text:
+        return 24.0
+    m = re.search(r"(\d+)\+?\s*day", text)
+    if m:
+        return int(m.group(1)) * 24.0
+    return None
+
+
+def _amazon_age_hours(posted_date):
+    if not posted_date:
+        return None
+    try:
+        dt = datetime.strptime(posted_date, "%B %d, %Y").replace(tzinfo=timezone.utc)
+        return _hours_since(dt)
+    except Exception:
+        return None
+
+
+def _raw(title, company, location, description, url, board, age_hours=None):
     return {
         "title": title or "",
         "company": company,
@@ -184,6 +242,7 @@ def _raw(title, company, location, description, url, board):
         "salary": None,
         "board": board,
         "company_size": COMPANY_SIZE_HINTS.get(company, 0),
+        "age_hours": age_hours,
     }
 
 
@@ -199,7 +258,8 @@ def fetch_greenhouse(company, slug):
         return []
     return [
         _raw(j.get("title"), company, (j.get("location") or {}).get("name", ""),
-             _strip_html(j.get("content")), j.get("absolute_url"), "greenhouse")
+             _strip_html(j.get("content")), j.get("absolute_url"), "greenhouse",
+             age_hours=_greenhouse_age_hours(j))
         for j in resp.json().get("jobs", [])
     ]
 
@@ -221,6 +281,7 @@ def fetch_lever(company, slug):
             j.get("text"), company, cat.get("location", ""),
             j.get("descriptionPlain") or _strip_html(j.get("description")),
             j.get("hostedUrl"), "lever",
+            age_hours=_lever_age_hours(j),
         ))
     return jobs
 
@@ -299,7 +360,8 @@ def fetch_workday(company, tenant, host, site, roles, role_matches):
         except Exception as e:
             logger.warning("Workday detail fetch failed for %s %s: %s", company, title, e)
         jobs.append(_raw(title, company, p.get("locationsText", ""), description,
-                          f"{base}/{site}{path}", "workday"))
+                          f"{base}/{site}{path}", "workday",
+                          age_hours=_workday_age_hours(p.get("postedOn"))))
     return jobs
 
 
@@ -323,6 +385,7 @@ def fetch_amazon(role):
         jobs.append(_raw(
             j.get("title"), "Amazon", location, description,
             "https://www.amazon.jobs" + (j.get("job_path") or ""), "amazon",
+            age_hours=_amazon_age_hours(j.get("posted_date")),
         ))
     return jobs
 
@@ -349,15 +412,22 @@ def _track_company_health(company, raw_count):
     return streak == WATCHLIST_STALE_THRESHOLD
 
 
-def scrape_watchlist(roles):
+def scrape_watchlist(roles, hours_old=None):
     """Sweep every configured Greenhouse/Lever/Workday company plus Amazon's
     own jobs API. Runs synchronously (plain HTTP, no browser) — call via
     asyncio.to_thread() from pipeline.sweep() like naukri_playwright is.
 
-    No hours_old filtering: these APIs don't reliably expose posting age,
-    and the watchlist is small/curated enough that re-fetching everything
-    each run and relying on the existing already_exists() URL dedup in
-    pipeline.sweep() is simpler than building per-source staleness logic.
+    hours_old filters by each source's own posting-date field (Greenhouse
+    first_published, Lever createdAt, Workday's "Posted N Days Ago" text,
+    Amazon's posted_date) — confirmed live these are all actually available,
+    despite this module originally assuming otherwise and skipping age
+    filtering entirely. That gap meant every company's full current listing
+    (regardless of how old) looked "new" the first time jobs.db ever saw it,
+    which is exactly what happened while jobs.db wasn't persisting (see
+    pipeline.py/the workflow git-push fix) — postings 3-5+ days old kept
+    surfacing as if fresh. A job whose age can't be determined (parse
+    failure, missing field) is kept rather than dropped, to avoid hiding a
+    genuinely fresh posting over a parsing edge case.
 
     Returns (jobs, newly_stale_companies) — the second element is normally
     empty; when non-empty, the caller should surface it (see
@@ -403,6 +473,11 @@ def scrape_watchlist(roles):
 
     total_fetched = len(jobs)
     jobs = [j for j in jobs if _is_india_relevant(j["location"])]
+
+    if hours_old is not None:
+        before_age_filter = len(jobs)
+        jobs = [j for j in jobs if j["age_hours"] is None or j["age_hours"] <= hours_old]
+        logger.info("Age filter (hours_old=%s): %d -> %d postings.", hours_old, before_age_filter, len(jobs))
 
     logger.info("Watchlist sweep fetched %d raw postings across %d companies, %d India-relevant.",
                 total_fetched, len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES) + 1,

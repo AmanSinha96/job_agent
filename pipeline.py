@@ -311,7 +311,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
         # cross-post to Indeed/LinkedIn/Naukri. See career_sites.py.
         from career_sites import scrape_watchlist
         try:
-            watchlist_jobs, stale_watchlist_companies = await asyncio.to_thread(scrape_watchlist, roles)
+            watchlist_jobs, stale_watchlist_companies = await asyncio.to_thread(scrape_watchlist, roles, hours_old)
         except Exception as e:
             logger.error("Watchlist sweep failed entirely: %s", e)
             watchlist_jobs = []
