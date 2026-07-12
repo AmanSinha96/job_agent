@@ -21,7 +21,18 @@ from dynamic_resume_builder import build_job_specific_resume
 from email_sender import send_email_report
 from config import GMAIL_CREDENTIALS_FILE, GMAIL_TOKEN_FILE, GMAIL_SCOPES, NOTIFY_EMAIL
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# Was console-only (logging.basicConfig with no filename=) — the "Upload
+# logs" workflow step globs *.log and always found nothing (if-no-files-
+# found: ignore silently swallowed it), so there was never any way to
+# inspect what a past run actually did without full GitHub Actions log
+# access (gated behind admin/write auth — the API's job-logs endpoint
+# 403s for anyone without it, even on a public repo). Writing to a file
+# too means the artifact actually contains something from now on.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("job_agent.log", mode="w")],
+)
 logger = logging.getLogger("cloud_run")
 
 TAILOR_TOP_N = 15
@@ -34,6 +45,16 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 def ist_str(dt: datetime, fmt: str = "%Y-%m-%d %I:%M %p IST") -> str:
     return dt.astimezone(IST).strftime(fmt)
+
+
+def gha_annotate(level: str, message: str):
+    """Print a GitHub Actions workflow-command annotation (::warning::/
+    ::error::) — these show up in the Checks UI/API even without full log
+    access, which 403s for anyone without admin/write auth on this repo
+    even though it's public. Use for anything that should be diagnosable
+    remotely without pulling raw logs."""
+    safe = str(message).replace("\r", " ").replace("\n", " ")
+    print(f"::{level}::{safe}")
 
 
 def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]]:
@@ -206,9 +227,14 @@ def notify_zero_results(sites: list[str], streak: int):
             token_file=GMAIL_TOKEN_FILE,
             scopes=GMAIL_SCOPES,
         )
-        logger.info("Zero-result notification sent." if sent else "Zero-result notification send returned False.")
+        if sent:
+            logger.info("Zero-result notification sent.")
+        else:
+            logger.warning("Zero-result notification send returned False.")
+            gha_annotate("warning", "Zero-result notification email failed to send (send_email_report returned False) — check Gmail OAuth token/credentials.")
     except Exception as e:
         logger.error("Could not send zero-result streak notification: %s", e)
+        gha_annotate("error", f"Zero-result notification email raised: {e}")
 
 
 def notify_stale_watchlist_companies(companies: list[str]):
@@ -237,9 +263,14 @@ def notify_stale_watchlist_companies(companies: list[str]):
             token_file=GMAIL_TOKEN_FILE,
             scopes=GMAIL_SCOPES,
         )
-        logger.info("Stale-watchlist notification sent." if sent else "Stale-watchlist notification send returned False.")
+        if sent:
+            logger.info("Stale-watchlist notification sent.")
+        else:
+            logger.warning("Stale-watchlist notification send returned False.")
+            gha_annotate("warning", "Stale-watchlist notification email failed to send (send_email_report returned False) — check Gmail OAuth token/credentials.")
     except Exception as e:
         logger.error("Could not send stale-watchlist notification: %s", e)
+        gha_annotate("error", f"Stale-watchlist notification email raised: {e}")
 
 
 def check_zero_result_streak(sites: list[str], saved: int):
@@ -305,6 +336,14 @@ def main(sites: list[str], hours_old: int):
             "Email send failed — leaving %d jobs as 'top_pick' so they're retried next cycle "
             "instead of being silently dropped.", len(tailored) + len(other_matches)
         )
+        # send_email_report() catches everything internally and returns
+        # False rather than raising, so this run still completes with
+        # conclusion=success on GitHub's side — completely invisible
+        # without this annotation. Confirmed live: this was happening
+        # silently on every single run for at least 3 days straight before
+        # being caught, precisely because there was no signal anywhere
+        # that would show up without full (admin-gated) log access.
+        gha_annotate("error", "Digest email failed to send this cycle (send_email_report returned False) — check Gmail OAuth token/credentials, most likely the token needs re-authorizing.")
 
 
 def notify_failure(sites: list[str], hours_old: int, exc: Exception):
@@ -330,9 +369,14 @@ def notify_failure(sites: list[str], hours_old: int, exc: Exception):
             token_file=GMAIL_TOKEN_FILE,
             scopes=GMAIL_SCOPES,
         )
-        logger.info("Failure notification sent." if sent else "Failure notification send returned False.")
+        if sent:
+            logger.info("Failure notification sent.")
+        else:
+            logger.warning("Failure notification send returned False.")
+            gha_annotate("error", "Failure-notification email ALSO failed to send (send_email_report returned False) — check Gmail OAuth token/credentials.")
     except Exception as e:
         logger.error("Could not even send the failure notification email: %s", e)
+        gha_annotate("error", f"Failure-notification email raised: {e}")
 
 
 if __name__ == "__main__":
