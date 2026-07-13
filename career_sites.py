@@ -80,6 +80,8 @@ GREENHOUSE_COMPANIES = {
     "Stripe": "stripe",
     "Databricks": "databricks",
     "Twilio": "twilio",
+    "MongoDB": "mongodb",
+    "Elastic": "elastic",
 }
 
 # Confirmed live 2026-07 — check https://api.lever.co/v0/postings/{slug}?mode=json first.
@@ -111,6 +113,22 @@ LEVER_COMPANIES = {
 # false "IN"/Indiana matches), Netflix (7 India postings, all
 # non-technical Mumbai media/legal roles), Home Depot (0 India presence at
 # all — India results are Indianapolis).
+#
+# Round 2 (2026-07) — checked but NOT added:
+# - Not on Workday/Greenhouse/Lever at all (own ATS): Oracle (own Recruiting
+#   Cloud), SAP/Capgemini (SuccessFactors), ServiceNow (SmartRecruiters),
+#   Snowflake/PepsiCo (Phenom People), Atlassian (Lever account exists but
+#   empty/inactive), Palo Alto Networks (SmartRecruiters), Confluent/UiPath
+#   (Ashby), Deloitte (Avature), EY (SuccessFactors), KPMG/JPMorgan Chase/
+#   American Express (Oracle Cloud HCM), TCS (own NextStep/iBegin portals),
+#   Wipro (SuccessFactors), Tech Mahindra (custom ASP.NET portal), Goldman
+#   Sachs (own higher.gs.com + Oracle Cloud), UnitedHealth Group (Oracle
+#   Taleo).
+# - On Workday/Greenhouse/Lever but confirmed ~zero India relevance for
+#   these target roles: Palantir (Lever, 0 India postings at all), C3.ai
+#   (Greenhouse "c3iot", 0 India postings), VMware/Broadcom (Workday, India
+#   presence is real but zero Data/Analytics/BI hits — all Software/QA
+#   Engineer).
 WORKDAY_COMPANIES = {
     "Fractal": {"tenant": "fractal", "host": "wd1", "site": "Careers"},
     "Commonwealth Bank": {"tenant": "cba", "host": "wd3", "site": "CommBank_Careers"},
@@ -134,6 +152,16 @@ WORKDAY_COMPANIES = {
     "GE HealthCare": {"tenant": "gehc", "host": "wd5", "site": "GEHC_ExternalSite"},
     "DXC Technology": {"tenant": "dxctechnology", "host": "wd1", "site": "DXCJobs"},
     "PwC": {"tenant": "pwc", "host": "wd3", "site": "Global_Experienced_Careers"},
+    "Accenture": {"tenant": "accenture", "host": "wd103", "site": "AccentureCareers"},
+    "Genpact": {"tenant": "genpact", "host": "wd108", "site": "External_Careers"},
+    "Wells Fargo": {"tenant": "wf", "host": "wd1", "site": "WellsFargoJobs"},
+    "Capital One": {"tenant": "capitalone", "host": "wd12", "site": "Capital_One"},
+    "Procter & Gamble": {"tenant": "pg", "host": "wd5", "site": "1000"},
+    "Johnson & Johnson": {"tenant": "jj", "host": "wd5", "site": "JJ"},
+    "Cisco": {"tenant": "cisco", "host": "wd5", "site": "Cisco_Careers"},
+    "Pfizer": {"tenant": "pfizer", "host": "wd1", "site": "PfizerCareers"},
+    "Verizon": {"tenant": "verizon", "host": "wd12", "site": "verizon-careers"},
+    "AT&T": {"tenant": "att", "host": "wd1", "site": "ATTGeneral"},
 }
 
 # Approximate headcount for company_size_bonus() (see job_filters.py) —
@@ -149,6 +177,10 @@ COMPANY_SIZE_HINTS = {
     "Target": 440000, "HPE": 62000, "HP Inc": 50000, "Equinix": 13000,
     "GE Aerospace": 52000, "GE Vernova": 80000, "GE HealthCare": 51000,
     "DXC Technology": 130000, "PwC": 370000,
+    "MongoDB": 5000, "Elastic": 3000, "Accenture": 750000, "Genpact": 125000,
+    "Wells Fargo": 230000, "Capital One": 55000, "Procter & Gamble": 108000,
+    "Johnson & Johnson": 140000, "Cisco": 85000, "Pfizer": 83000,
+    "Verizon": 105000, "AT&T": 140000,
 }
 
 
@@ -286,7 +318,7 @@ def fetch_lever(company, slug):
     return jobs
 
 
-def fetch_workday(company, tenant, host, site, roles, role_matches):
+def fetch_workday(company, tenant, host, site, roles, role_matches, hours_old=None):
     # Workday's Cloudflare front blocks plain `requests` by TLS fingerprint
     # (JA3) alone — confirmed live: identical payload/headers, curl and
     # curl_cffi(impersonate="chrome") get HTTP 200, `requests` gets HTTP 400,
@@ -348,6 +380,16 @@ def fetch_workday(company, tenant, host, site, roles, role_matches):
         # can surface a title that isn't actually that role.
         if not role_matches(title):
             continue
+        # Skip the detail fetch (a separate, slower HTTP call) entirely for
+        # postings already too old — postedOn is available for free in the
+        # list response, no need to pay for a detail fetch just to filter
+        # it out afterward anyway. Confirmed live: Accenture alone returned
+        # 57 role-matched titles, most 5-30+ days old, taking 100s total —
+        # this cuts that down to only the ones that could actually survive
+        # scrape_watchlist()'s age filter.
+        early_age = _workday_age_hours(p.get("postedOn"))
+        if hours_old is not None and early_age is not None and early_age > hours_old:
+            continue
         path = p.get("externalPath", "")
         description = ""
         try:
@@ -359,7 +401,18 @@ def fetch_workday(company, tenant, host, site, roles, role_matches):
             description = _strip_html(detail.json().get("jobPostingInfo", {}).get("jobDescription", ""))
         except Exception as e:
             logger.warning("Workday detail fetch failed for %s %s: %s", company, title, e)
-        jobs.append(_raw(title, company, p.get("locationsText", ""), description,
+        # Some tenants (confirmed live: Accenture's "accenture" tenant) don't
+        # return locationsText at all — location is instead the second
+        # element of bulletFields (the first is always the requisition ID),
+        # e.g. ["R00327660", "Ebene"]. Without this fallback every posting
+        # from those tenants silently loses its location and gets dropped
+        # by _is_india_relevant() regardless of where it actually is.
+        location = p.get("locationsText") or ""
+        if not location:
+            bullets = p.get("bulletFields") or []
+            if len(bullets) > 1:
+                location = bullets[1]
+        jobs.append(_raw(title, company, location, description,
                           f"{base}/{site}{path}", "workday",
                           age_hours=_workday_age_hours(p.get("postedOn"))))
     return jobs
@@ -463,7 +516,7 @@ def scrape_watchlist(roles, hours_old=None):
             continue
         # Not health-tracked when skipped for budget — that's a resource
         # constraint, not the company itself being broken.
-        track(company, fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches))
+        track(company, fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches, hours_old))
     if skipped:
         logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
