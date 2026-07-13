@@ -1,8 +1,12 @@
 .venv/
 token.json
 credentials.json
+credential.json
 gmail_token.json
 .env
+*.env
+credentials*.json
+token*.json
 
 # Python
 __pycache__/
