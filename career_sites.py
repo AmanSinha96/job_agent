@@ -415,7 +415,15 @@ def fetch_workday(company, tenant, host, site, roles, role_matches, hours_old=No
         jobs.append(_raw(title, company, location, description,
                           f"{base}/{site}{path}", "workday",
                           age_hours=_workday_age_hours(p.get("postedOn"))))
-    return jobs
+    # Returns raw `postings` count alongside the filtered `jobs` list —
+    # `len(jobs)` reflects role-match AND recency, both of which fluctuate
+    # completely normally cycle to cycle (a company simply not posting a
+    # matching role in the last few hours is not the same as its ATS
+    # integration being broken). The stale-company health check (see
+    # scrape_watchlist()) needs the former signal, not the latter — using
+    # len(jobs) there was flooding false "may be stale" alerts for
+    # companies that were working fine, just quiet that cycle.
+    return jobs, len(postings)
 
 
 def fetch_amazon(role):
@@ -515,8 +523,17 @@ def scrape_watchlist(roles, hours_old=None):
             skipped.append(company)
             continue
         # Not health-tracked when skipped for budget — that's a resource
-        # constraint, not the company itself being broken.
-        track(company, fetch_workday(company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches, hours_old))
+        # constraint, not the company itself being broken. Uses the raw
+        # postings count for health, not len(company_jobs) — see
+        # fetch_workday()'s return docstring for why the two must be kept
+        # separate (confirmed live: conflating them flooded false "may be
+        # stale" alerts for companies working perfectly fine, just without
+        # a role-matched AND recent-enough posting that particular cycle).
+        company_jobs, raw_count = fetch_workday(
+            company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches, hours_old)
+        jobs.extend(company_jobs)
+        if _track_company_health(company, raw_count):
+            newly_stale.append(company)
     if skipped:
         logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
