@@ -516,12 +516,28 @@ def scrape_watchlist(roles, hours_old=None):
     # (all sources, not just watchlist) if several companies are flaky at
     # once. Once the budget's spent, remaining companies are skipped for
     # this run — they'll get picked up next cycle instead.
+    #
+    # Iterating WORKDAY_COMPANIES in the same fixed dict order every cycle
+    # meant that whenever the budget ran tight, it was always the SAME
+    # tail-end companies (currently several of the strongest additions —
+    # Accenture, Genpact, Cisco) that got sacrificed, cycle after cycle,
+    # while the same front-of-list companies always got processed. Rotating
+    # the starting point each cycle (persisted via database meta, same
+    # pattern as the stale-company streak) spreads that risk evenly instead
+    # of permanently disadvantaging whoever happens to be listed last.
+    import database  # deferred: keeps career_sites.py's non-DB functions importable standalone
+    all_workday = list(WORKDAY_COMPANIES.items())
+    offset = int(database.get_meta("workday_rotation_offset", 0) or 0) % len(all_workday)
+    rotated = all_workday[offset:] + all_workday[:offset]
+
     workday_deadline = time.time() + WORKDAY_BUDGET_SECONDS
     skipped = []
-    for company, cfg in WORKDAY_COMPANIES.items():
+    attempted = 0
+    for company, cfg in rotated:
         if time.time() >= workday_deadline:
             skipped.append(company)
             continue
+        attempted += 1
         # Not health-tracked when skipped for budget — that's a resource
         # constraint, not the company itself being broken. Uses the raw
         # postings count for health, not len(company_jobs) — see
@@ -534,6 +550,7 @@ def scrape_watchlist(roles, hours_old=None):
         jobs.extend(company_jobs)
         if _track_company_health(company, raw_count):
             newly_stale.append(company)
+    database.set_meta("workday_rotation_offset", (offset + attempted) % len(all_workday))
     if skipped:
         logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
