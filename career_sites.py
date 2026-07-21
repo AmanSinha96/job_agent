@@ -8,12 +8,18 @@ shops, etc.) don't cross-post broadly and are effectively invisible to the
 other three sources no matter how the search terms are tuned. This module
 hits each company's own careers-site API directly instead.
 
-Three ATS platforms expose a free, public, unauthenticated JSON API for
-their own job board — no scraping, no anti-bot risk:
-  - Greenhouse: boards-api.greenhouse.io
-  - Lever:      api.lever.co
-  - Workday:    {tenant}.{host}.myworkdayjobs.com/wday/cxs/...
-Amazon isn't on any of the three but runs its own public jobs API
+These ATS platforms all expose a free, public, unauthenticated JSON API
+for their own job board — no scraping, no anti-bot risk:
+  - Greenhouse:     boards-api.greenhouse.io
+  - Lever:          api.lever.co
+  - Workday:        {tenant}.{host}.myworkdayjobs.com/wday/cxs/...
+  - SmartRecruiters: api.smartrecruiters.com/v1/companies/{slug}/postings
+  - Oracle Fusion Cloud "Candidate Experience":
+    {tenant}.fa.{region}.oraclecloud.com/hcmRestApi/resources/latest/
+    recruitingCEJobRequisitions — reverse-engineered (not documented
+    anywhere obvious), confirmed 2026-07: no auth/bot-mitigation at all,
+    plain `requests` works fine, unlike Workday.
+Amazon isn't on any of the above but runs its own public jobs API
 (amazon.jobs), so it gets a dedicated fetch function.
 
 This only covers companies on one of these platforms. Large enterprises
@@ -164,6 +170,28 @@ WORKDAY_COMPANIES = {
     "AT&T": {"tenant": "att", "host": "wd1", "site": "ATTGeneral"},
 }
 
+# Confirmed live 2026-07 — check https://api.smartrecruiters.com/v1/companies/{slug}/postings first.
+# Checked but not added: Palo Alto Networks — the SmartRecruiters careers
+# page is real (careers.smartrecruiters.com/paloaltonetworks2) but no slug
+# variant tried against the API (paloaltonetworks2/paloaltonetworks/etc.)
+# returned any postings — likely a private/unlisted board, not public.
+SMARTRECRUITERS_COMPANIES = {
+    "ServiceNow": "ServiceNow",
+}
+
+# Reverse-engineered Oracle Fusion Cloud "Candidate Experience" API
+# (2026-07) — host is each tenant's actual Oracle Cloud subdomain (varies by
+# region: us2/em2/em8/none), site is the "CX_1001"/"CX_1"/"LateralHiring"
+# style site number visible in the company's real careers URL.
+# Goldman Sachs' Workday-style main site doesn't exist — "LateralHiring" is
+# genuinely the only public candidate site they run on this platform.
+ORACLE_CLOUD_COMPANIES = {
+    "JPMorgan Chase": {"host": "jpmc.fa.oraclecloud.com", "site": "CX_1001"},
+    "American Express": {"host": "egug.fa.us2.oraclecloud.com", "site": "CX_1"},
+    "Goldman Sachs": {"host": "hdpc.fa.us2.oraclecloud.com", "site": "LateralHiring"},
+    "KPMG": {"host": "ejgk.fa.em2.oraclecloud.com", "site": "CX_1"},
+}
+
 # Approximate headcount for company_size_bonus() (see job_filters.py) —
 # jobspy-sourced jobs get this from Indeed/LinkedIn's own data; these
 # watchlist sources don't return it, so it's hardcoded per known company.
@@ -181,6 +209,8 @@ COMPANY_SIZE_HINTS = {
     "Wells Fargo": 230000, "Capital One": 55000, "Procter & Gamble": 108000,
     "Johnson & Johnson": 140000, "Cisco": 85000, "Pfizer": 83000,
     "Verizon": 105000, "AT&T": 140000,
+    "ServiceNow": 25000, "JPMorgan Chase": 300000, "American Express": 77000,
+    "Goldman Sachs": 45000, "KPMG": 275000,
 }
 
 
@@ -260,6 +290,32 @@ def _amazon_age_hours(posted_date):
     try:
         dt = datetime.strptime(posted_date, "%B %d, %Y").replace(tzinfo=timezone.utc)
         return _hours_since(dt)
+    except Exception:
+        return None
+
+
+def _smartrecruiters_age_hours(released_date):
+    if not released_date:
+        return None
+    try:
+        return _hours_since(datetime.fromisoformat(released_date.replace("Z", "+00:00")))
+    except Exception:
+        return None
+
+
+def _oracle_age_hours(date_str):
+    # List endpoint's PostedDate is date-only ("2026-07-21"); detail
+    # endpoint's ExternalPostedStartDate is full ISO with timezone
+    # ("2026-07-21T11:25:21+00:00") — handle both, preferring whichever was
+    # actually passed in by the caller.
+    if not date_str:
+        return None
+    try:
+        return _hours_since(datetime.fromisoformat(date_str.replace("Z", "+00:00")))
+    except Exception:
+        pass
+    try:
+        return _hours_since(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc))
     except Exception:
         return None
 
@@ -451,6 +507,128 @@ def fetch_amazon(role):
     return jobs
 
 
+def fetch_smartrecruiters(company, slug, roles, role_matches, hours_old=None):
+    # No bot-mitigation encountered (unlike Workday) — plain `requests`
+    # works fine. `q` searches title+description server-side; `content`
+    # isn't returned by the list endpoint, only a per-posting detail call.
+    postings, seen_ids = [], set()
+    for role in roles:
+        try:
+            resp = requests.get(
+                f"https://api.smartrecruiters.com/v1/companies/{slug}/postings",
+                params={"q": role, "limit": 50}, headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("SmartRecruiters fetch failed for %s (role=%r): %s", company, role, e)
+            continue
+        for p in resp.json().get("content", []):
+            pid = p.get("id")
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                postings.append(p)
+
+    jobs = []
+    for p in postings:
+        title = p.get("name", "")
+        if not role_matches(title):
+            continue
+        location = (p.get("location") or {}).get("fullLocation", "")
+        if not _is_india_relevant(location):
+            continue
+        # Skip the detail fetch (a separate HTTP call) for postings already
+        # too old — releasedDate is available for free in the list response,
+        # same early-skip optimization as fetch_workday().
+        age = _smartrecruiters_age_hours(p.get("releasedDate"))
+        if hours_old is not None and age is not None and age > hours_old:
+            continue
+        pid = p.get("id")
+        description, url = "", ""
+        try:
+            detail = requests.get(
+                f"https://api.smartrecruiters.com/v1/companies/{slug}/postings/{pid}",
+                headers=_HEADERS, timeout=_TIMEOUT,
+            )
+            detail.raise_for_status()
+            dd = detail.json()
+            url = dd.get("postingUrl") or dd.get("applyUrl") or ""
+            jd = dd.get("jobAd", {}).get("sections", {}).get("jobDescription", {})
+            description = _strip_html(jd.get("text", "")) if isinstance(jd, dict) else ""
+        except Exception as e:
+            logger.warning("SmartRecruiters detail fetch failed for %s %s: %s", company, title, e)
+        jobs.append(_raw(title, company, location, description, url, "smartrecruiters", age_hours=age))
+    # See fetch_workday()'s return docstring — raw postings count (before
+    # role/location/age filtering) is the stable health signal, not the
+    # heavily-filtered final `jobs` count.
+    return jobs, len(postings)
+
+
+def fetch_oracle_cloud(company, host, site, roles, role_matches, hours_old=None):
+    # Reverse-engineered 2026-07 — no documented API, no auth, no
+    # bot-mitigation encountered. IMPORTANT: limit/offset/keyword must be
+    # embedded INSIDE the `finder` string, not passed as separate query
+    # params (those are silently ignored) — and the keyword must be passed
+    # as plain text, NOT pre-URL-encoded (e.g. literal %22 quotes), since
+    # `requests` double-encodes the %, breaking the query and returning a
+    # false 0-results response instead of an error.
+    postings, seen_ids = [], set()
+    for role in roles:
+        try:
+            resp = requests.get(
+                f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions",
+                params={
+                    "onlyData": "true",
+                    "expand": "requisitionList",
+                    "finder": f"findReqs;siteNumber={site},limit=50,offset=0,keyword={role}",
+                },
+                headers={"Accept": "application/json"}, timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            items = resp.json().get("items") or [{}]
+            for req in items[0].get("requisitionList", []):
+                rid = req.get("Id")
+                if rid and rid not in seen_ids:
+                    seen_ids.add(rid)
+                    postings.append(req)
+        except Exception as e:
+            logger.warning("Oracle Cloud fetch failed for %s (role=%r): %s", company, role, e)
+
+    jobs = []
+    for req in postings:
+        title = req.get("Title", "")
+        if not role_matches(title):
+            continue
+        location = req.get("PrimaryLocation", "")
+        if not _is_india_relevant(location):
+            continue
+        # Early age-skip using the list endpoint's date-only PostedDate,
+        # before paying for the detail call — same spirit as Workday/
+        # SmartRecruiters, though coarser (no time-of-day precision).
+        age = _oracle_age_hours(req.get("PostedDate"))
+        if hours_old is not None and age is not None and age > hours_old:
+            continue
+        rid = req.get("Id")
+        description, url = "", f"https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{rid}"
+        try:
+            detail = requests.get(
+                f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/{rid}",
+                params={"onlyData": "true", "expand": "all"},
+                headers={"Accept": "application/json"}, timeout=_TIMEOUT,
+            )
+            detail.raise_for_status()
+            dd = detail.json()
+            description = _strip_html(dd.get("ExternalDescriptionStr", ""))
+            # Detail endpoint's timestamp is more precise than the list's
+            # date-only field — prefer it once we've paid for the call.
+            precise_age = _oracle_age_hours(dd.get("ExternalPostedStartDate"))
+            if precise_age is not None:
+                age = precise_age
+        except Exception as e:
+            logger.warning("Oracle Cloud detail fetch failed for %s %s: %s", company, title, e)
+        jobs.append(_raw(title, company, location, description, url, "oracle_cloud", age_hours=age))
+    return jobs, len(postings)
+
+
 # Consecutive zero-raw-result cycles before flagging a watchlist company as
 # newly stale — i.e. its API returned a genuine response but with 0 postings
 # at all, not "0 postings matching our roles/locations". Confirmed this
@@ -555,6 +733,18 @@ def scrape_watchlist(roles, hours_old=None):
         logger.warning("Workday budget (%ds) exhausted — skipped %d companies this run: %s",
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
 
+    for company, slug in SMARTRECRUITERS_COMPANIES.items():
+        company_jobs, raw_count = fetch_smartrecruiters(company, slug, roles, role_matches, hours_old)
+        jobs.extend(company_jobs)
+        if _track_company_health(company, raw_count):
+            newly_stale.append(company)
+
+    for company, cfg in ORACLE_CLOUD_COMPANIES.items():
+        company_jobs, raw_count = fetch_oracle_cloud(company, cfg["host"], cfg["site"], roles, role_matches, hours_old)
+        jobs.extend(company_jobs)
+        if _track_company_health(company, raw_count):
+            newly_stale.append(company)
+
     for role in roles:
         jobs.extend(fetch_amazon(role))
 
@@ -566,9 +756,10 @@ def scrape_watchlist(roles, hours_old=None):
         jobs = [j for j in jobs if j["age_hours"] is None or j["age_hours"] <= hours_old]
         logger.info("Age filter (hours_old=%s): %d -> %d postings.", hours_old, before_age_filter, len(jobs))
 
+    total_companies = (len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES)
+                       + len(SMARTRECRUITERS_COMPANIES) + len(ORACLE_CLOUD_COMPANIES) + 1)
     logger.info("Watchlist sweep fetched %d raw postings across %d companies, %d India-relevant.",
-                total_fetched, len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES) + 1,
-                len(jobs))
+                total_fetched, total_companies, len(jobs))
     if newly_stale:
         logger.warning("Watchlist companies newly stale (%d+ zero-result cycles): %s",
                         WATCHLIST_STALE_THRESHOLD, ", ".join(newly_stale))
