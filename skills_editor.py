@@ -161,6 +161,10 @@ class SkillsEditor:
 
                 "bedrock",
 
+                "chromadb",
+
+                "human-in-the-loop",
+
             ],
 
             "Backend": [
@@ -178,6 +182,8 @@ class SkillsEditor:
                 "api",
 
                 "prisma",
+
+                "cron",
 
             ],
 
@@ -209,6 +215,10 @@ class SkillsEditor:
 
                 "delta",
 
+                "postgres",
+
+                "db2",
+
             ],
 
             "Cloud & Deployment": [
@@ -234,6 +244,16 @@ class SkillsEditor:
                 "rds",
 
                 "glue",
+
+                "amplify",
+
+                "vercel",
+
+                "supabase",
+
+                "n8n",
+
+                "github",
 
             ],
 
@@ -273,6 +293,14 @@ class SkillsEditor:
 
                 "a/b testing",
 
+                "ab testing",
+
+                "a/b tests",
+
+                "ab tests",
+
+                "statistics",
+
             ],
 
             "Integrations": [
@@ -288,6 +316,28 @@ class SkillsEditor:
                 "hubspot",
 
                 "resend",
+
+                "google analytics",
+
+                "tiktok ads",
+
+                "next.js",
+
+                "nextjs",
+
+                "typescript",
+
+            ],
+
+            "PDF & Document Processing": [
+
+                "pymupdf",
+
+                "pdfplumber",
+
+                "camelot",
+
+                "openpyxl",
 
             ],
 
@@ -319,7 +369,15 @@ class SkillsEditor:
 
                     return category
 
-        return "Data Engineering"
+        # Was defaulting to "Data Engineering" for anything unrecognized —
+        # confirmed live this put keywords in the wrong section (e.g.
+        # "github actions", genuinely missing from category_mapping()
+        # above, landed under Data Engineering instead of Cloud &
+        # Deployment where it already existed, and add_keyword()'s dedup
+        # only checked within the target category, so it appeared twice).
+        # Returning None means add_keyword() skips it — no home for it is
+        # better than a wrong one.
+        return None
 
     # --------------------------------------------------
 
@@ -343,6 +401,30 @@ class SkillsEditor:
         if norm_keyword in self.GENERIC_SKIP:
             return
 
+        # detect_category() returns None when nothing in category_mapping()
+        # recognizes the keyword — no home for it is better than dumping it
+        # in a wrong/default category.
+        if category is None:
+            return
+
+        # Dedup GLOBALLY across every category, not just the target one —
+        # confirmed live this was the actual bug: "github actions" already
+        # existed under "Cloud & Deployment", but detect_category() sent a
+        # JD-matched "github actions" to the "Data Engineering" default,
+        # whose own (empty) existing-list obviously didn't contain it, so
+        # it got added a second time in the wrong section.
+        all_existing = [
+            self.normalize(x)
+            for skills in self.skill_categories.values()
+            for x in skills
+        ]
+
+        if norm_keyword in all_existing:
+            return
+
+        if any(norm_keyword in e for e in all_existing):
+            return
+
         if category not in self.skill_categories:
 
             self.skill_categories[
@@ -350,26 +432,6 @@ class SkillsEditor:
                 category
 
             ] = []
-
-        existing = [
-
-            self.normalize(x)
-
-            for x in self.skill_categories[
-
-                category
-
-            ]
-
-        ]
-
-        # Skip exact duplicates and near-duplicates already implied by an
-        # existing entry (e.g. "redshift" when "Amazon Redshift" is there).
-        if norm_keyword in existing:
-            return
-
-        if any(norm_keyword in e for e in existing):
-            return
 
         self.skill_categories[
 
@@ -406,6 +468,11 @@ class SkillsEditor:
                 keyword
 
             )
+
+            # No recognized category — add_keyword() will skip it entirely,
+            # so there's nothing to count and no key to look up afterward.
+            if category is None:
+                continue
 
             before = len(
 
