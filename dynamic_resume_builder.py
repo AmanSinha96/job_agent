@@ -448,7 +448,7 @@ def build_job_specific_resume(
     # Generate Summary
     # ------------------------------------------------------
 
-    summary, summary_source = generate_summary(
+    summary, summary_source, llm_errors = generate_summary(
 
         profile,
 
@@ -627,6 +627,10 @@ def build_job_specific_resume(
         "summary_source":
 
             summary_source,
+
+        "llm_errors":
+
+            llm_errors,
 
         "cached":
 

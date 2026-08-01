@@ -67,6 +67,7 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
     """
     tailored, other_matches = [], []
     summary_sources = []
+    first_groq_error, first_gemini_error = None, None
     for job in jobs:
         if len(tailored) >= TAILOR_TOP_N:
             other_matches.append(job)
@@ -80,10 +81,16 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
         tailored.append({**job, **result})
         if "summary_source" in result:
             summary_sources.append(result["summary_source"])
+            errs = result.get("llm_errors") or {}
+            if first_groq_error is None and "groq" in errs:
+                first_groq_error = errs["groq"]
+            if first_gemini_error is None and "gemini" in errs:
+                first_gemini_error = errs["gemini"]
 
-    # Surface Groq/Gemini health as a check-run annotation — previously the
-    # only signal was logger.warning inside summary_generator.py, invisible
-    # without full log access (403s without admin/write auth on this repo).
+    # Surface Groq/Gemini health (including the actual error text) as a
+    # check-run annotation — previously the only signal was logger.warning
+    # inside summary_generator.py, invisible without full log access
+    # (403s without admin/write auth on this repo).
     if summary_sources:
         fallback_count = summary_sources.count("fallback")
         gemini_count = summary_sources.count("gemini")
@@ -91,13 +98,13 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
             gha_annotate(
                 "error",
                 f"Both Groq and Gemini failed for {fallback_count}/{len(summary_sources)} tailored resumes this cycle "
-                "— static fallback summary used. Check GROQ_API_KEY/GEMINI_API_KEY secrets.",
+                f"— static fallback summary used. Groq error: {first_groq_error}. Gemini error: {first_gemini_error}.",
             )
         elif gemini_count:
             gha_annotate(
                 "warning",
                 f"Groq failed for {gemini_count}/{len(summary_sources)} tailored resumes this cycle, fell back to Gemini "
-                "— check GROQ_API_KEY/quota.",
+                f"— Groq error: {first_groq_error}.",
             )
 
     return tailored, other_matches

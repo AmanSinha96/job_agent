@@ -156,22 +156,27 @@ Rules
 8. Return only the summary.
 """
 
-    # Returns (summary_text, source) — source lets callers (cloud_run.py)
-    # surface which path actually served each job as a GitHub Actions
-    # annotation, since a silent Groq/Gemini failure here previously had no
-    # visible signal outside of logger.warning (invisible without log
-    # access, which 403s without admin/write auth on this repo).
+    # Returns (summary_text, source, llm_errors) — source/llm_errors let
+    # callers (cloud_run.py) surface which path actually served each job,
+    # and why, as a GitHub Actions annotation. A silent Groq/Gemini failure
+    # here previously had no visible signal outside of logger.warning
+    # (invisible without log access, which 403s without admin/write auth
+    # on this repo) — confirmed live 2026-08-01: both APIs were failing
+    # for 15/15 tailored resumes with no visible error text anywhere.
+    llm_errors = {}
     try:
-        return _clean_llm_output(_call_groq(prompt)), "groq"
+        return _clean_llm_output(_call_groq(prompt)), "groq", llm_errors
     except Exception as e:
+        llm_errors["groq"] = str(e)
         logger.warning("Groq summary generation failed, falling back to Gemini: %s", e)
 
     try:
-        return _clean_llm_output(_call_gemini(prompt)), "gemini"
+        return _clean_llm_output(_call_gemini(prompt)), "gemini", llm_errors
     except Exception as e:
+        llm_errors["gemini"] = str(e)
         logger.warning("Gemini summary generation failed, using static fallback: %s", e)
 
-    return _static_fallback_summary(keywords), "fallback"
+    return _static_fallback_summary(keywords), "fallback", llm_errors
 
 
 def _static_fallback_summary(keywords) -> str:
