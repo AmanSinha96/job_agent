@@ -111,12 +111,9 @@ BLOCKED_KEYWORDS = {
     "ios",
     "android",
     "mobile developer",
-    "customer support",
-    "call center",
     "designer",
     "graphic",
     "account executive",
-    "medical",
     "teacher",
     "content writer",
     # Junior/entry-level exclusion — candidate is 6+ years experienced,
@@ -131,18 +128,30 @@ BLOCKED_KEYWORDS = {
     "junior",
 }
 
-# "marketing"/"sales" scanned against the FULL JD text (like the rest of
-# BLOCKED_KEYWORDS above) caused false rejections — the candidate's actual
-# specialty is marketing analytics (google analytics/tiktok ads are real
-# MATCH_KEYWORDS entries), so any Data/BI Analyst JD that merely mentions
-# "supports the marketing org" or "partners with sales" in passing got
-# hard-rejected for an unrelated reason. These two are only a meaningful
-# "wrong job family" signal when they describe the ROLE ITSELF, so they're
-# checked against the title only, not the whole description — see
-# pipeline.should_keep().
+# These four scanned against the FULL JD text (like the rest of
+# BLOCKED_KEYWORDS above) caused false rejections — they're only a
+# meaningful "wrong job family" signal when they describe the ROLE ITSELF,
+# not when merely mentioned in passing, so they're checked against the
+# title only, not the whole description — see pipeline.should_keep().
+# - sales/marketing: candidate's actual specialty is marketing analytics
+#   (google analytics/tiktok ads are real MATCH_KEYWORDS entries), so any
+#   Data/BI Analyst JD that merely mentions "supports the marketing org" or
+#   "partners with sales" in passing got hard-rejected for an unrelated
+#   reason.
+# - medical/customer support: confirmed live rejecting a genuinely
+#   well-matched Twilio "Staff Business Intelligence Engineer" posting —
+#   "medical" hit inside standard EEO boilerplate ("...reproductive health
+#   decisions, or related medical conditions)..."), "customer support" hit
+#   inside a stakeholder-team list ("Finance to Sales to Marketing to
+#   Customer Support"). Neither describes the role itself. Greenhouse/Lever
+#   JDs include this full boilerplate far more often than jobspy-sourced
+#   (LinkedIn/Indeed) listings do, which is why this specific false-positive
+#   surfaced while investigating the watchlist's yield rather than earlier.
 TITLE_ONLY_BLOCKED_KEYWORDS = {
     "sales",
     "marketing",
+    "medical",
+    "customer support",
 }
 
 # Third-party recruiting marketplaces that repost jobs on LinkedIn/Indeed
