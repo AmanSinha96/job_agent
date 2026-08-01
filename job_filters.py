@@ -111,8 +111,6 @@ BLOCKED_KEYWORDS = {
     "ios",
     "android",
     "mobile developer",
-    "sales",
-    "marketing",
     "customer support",
     "call center",
     "designer",
@@ -131,6 +129,20 @@ BLOCKED_KEYWORDS = {
     "campus hire",
     "graduate program",
     "junior",
+}
+
+# "marketing"/"sales" scanned against the FULL JD text (like the rest of
+# BLOCKED_KEYWORDS above) caused false rejections — the candidate's actual
+# specialty is marketing analytics (google analytics/tiktok ads are real
+# MATCH_KEYWORDS entries), so any Data/BI Analyst JD that merely mentions
+# "supports the marketing org" or "partners with sales" in passing got
+# hard-rejected for an unrelated reason. These two are only a meaningful
+# "wrong job family" signal when they describe the ROLE ITSELF, so they're
+# checked against the title only, not the whole description — see
+# pipeline.should_keep().
+TITLE_ONLY_BLOCKED_KEYWORDS = {
+    "sales",
+    "marketing",
 }
 
 # Minimum years of experience a posting must require to be kept — a JD

@@ -11,9 +11,9 @@ from ats_detector import detect_ats
 from resume_scorer import score_resume
 from job_filters import (
     TARGET_ROLES, ROLE_WORD_GROUPS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
-    BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES, BIG_COMPANY_BONUS,
-    MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS, MIN_EXPERIENCE_YEARS,
-    EXCLUDED_ROLE_PHRASES, EXCLUDED_ROLE_REDEEMERS,
+    BLOCKED_KEYWORDS, TITLE_ONLY_BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES,
+    BIG_COMPANY_BONUS, MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS,
+    MIN_EXPERIENCE_YEARS, EXCLUDED_ROLE_PHRASES, EXCLUDED_ROLE_REDEEMERS,
 )
 from config import PROXIES, MIN_SALARY_LPA
 
@@ -165,9 +165,13 @@ def should_keep(job: dict):
     if not location_matches(job["location"]):
         return False, "location_mismatch"
 
-    # 3. Blocked keywords
+    # 3. Blocked keywords — full JD text for most, title-only for terms
+    # ("marketing"/"sales") that are only a meaningful "wrong job family"
+    # signal when they describe the role itself, not when merely mentioned
+    # in passing (candidate's actual specialty is marketing analytics).
     if blocked_job(text, BLOCKED_KEYWORDS): return False, "blocked_keyword"
-    
+    if blocked_job(job["title"].lower(), TITLE_ONLY_BLOCKED_KEYWORDS): return False, "blocked_keyword_title"
+
     # 4. Keyword match requirement
     matches = keyword_matches(text, MATCH_KEYWORDS)
     if len(matches) < MIN_MATCH_COUNT:
