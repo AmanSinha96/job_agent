@@ -39,8 +39,18 @@ def already_exists(url: str):
 _BOUNDARY_CACHE = {}
 
 def _boundary_pattern(phrase):
+    # Trailing "s?" catches plain plurals ("pipeline" -> "pipelines", "rest
+    # api" -> "rest apis") for free. Confirmed live against the real
+    # production database: "pipeline" is the candidate's headline resume
+    # strength, yet 1,090 of 3,304 kept jobs (33%) mentioned it only in
+    # plural form and got zero keyword credit for it under the old
+    # exact-\b-match rule — silently under-scoring exactly the postings
+    # that should have ranked highest. Irregular variants (postgres vs.
+    # postgresql, next.js vs. nextjs, a/b testing vs. ab testing/a/b tests)
+    # aren't simple pluralization and need their own explicit MATCH_KEYWORDS
+    # entries instead — see job_filters.py.
     if phrase not in _BOUNDARY_CACHE:
-        _BOUNDARY_CACHE[phrase] = re.compile(r"\b" + re.escape(phrase) + r"\b")
+        _BOUNDARY_CACHE[phrase] = re.compile(r"\b" + re.escape(phrase) + r"s?\b")
     return _BOUNDARY_CACHE[phrase]
 
 def keyword_matches(text: str, keywords: list[str]):

@@ -58,25 +58,28 @@ LOCATIONS = ["Bangalore", "Hyderabad", "Pune"]
 MATCH_KEYWORDS = [
     # Core / data engineering
     "python", "sql", "data", "analytics", "etl", "elt", "pipeline",
-    "dbt", "redshift", "postgres", "mysql", "db2",
+    "dbt", "redshift", "postgres", "postgresql", "mysql", "db2",
     # Backend
-    "fastapi", "rest api", "prisma",
+    "fastapi", "rest api", "restful", "prisma", "cron",
     # Cloud & deployment
     "aws", "amplify", "rds", "vercel", "supabase", "n8n", "docker",
     "github actions", "bedrock",
-    # AI / LLM
-    "ai", "llm", "langchain", "openai", "claude", "gemini", "rag",
-    "prompt engineering", "chromadb",
+    # AI / LLM — langchain removed 2026-08: not actually on the resume
+    # (audit found it inflating scores on LangChain-heavy postings with no
+    # real matching experience), human-in-the-loop added (it is, twice).
+    "ai", "llm", "openai", "claude", "gemini", "rag",
+    "prompt engineering", "chromadb", "human-in-the-loop",
     # BI & visualization
     "tableau", "excel",
     # PDF / document processing
     "pymupdf", "pdfplumber", "camelot", "openpyxl",
     # ML foundational
     "machine learning", "scikit-learn", "sklearn", "xgboost", "lightgbm",
-    "regression", "classification", "a/b testing", "statistics",
+    "regression", "classification", "a/b testing", "ab testing",
+    "a/b tests", "ab tests", "statistics",
     # Integrations / product
     "graph api", "azure ad", "resend", "google analytics", "tiktok ads",
-    "next.js", "typescript",
+    "next.js", "nextjs", "typescript",
 ]
 
 MIN_MATCH_COUNT = 2
