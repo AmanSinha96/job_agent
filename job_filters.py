@@ -45,6 +45,22 @@ ROLE_WORD_GROUPS = [
     {"tableau", "analyst"},
 ]
 
+# Titles containing one of these exact phrases were explicitly excluded
+# from TARGET_ROLES above (Data Engineer/Data Scientist/Machine Learning
+# Engineer, dropped 2026-07 per explicit request to keep the role list
+# narrow) — but ROLE_WORD_GROUPS' word-based (non-adjacent) matching could
+# still readmit them via an unrelated group: "Data Engineer II, Data &
+# Analytics" matches {"analytics","engineer"} even though the actual role
+# IS a Data Engineer role with "Analytics" just naming the team, not
+# describing a different, wanted role. Confirmed live: 156 "Data Engineer",
+# 16 "Data Scientist", and 20 "Machine Learning Engineer" titled postings
+# were kept this way, including the single highest-confidence job in the
+# whole database. Reject titles containing one of these phrases outright
+# UNLESS they also contain a redeemer word signaling a genuinely hybrid/
+# adjacent role, not a plain excluded one.
+EXCLUDED_ROLE_PHRASES = ["data engineer", "data scientist", "machine learning engineer"]
+EXCLUDED_ROLE_REDEEMERS = {"analyst", "bi", "product"}
+
 # Trimmed 2026-07: Bengaluru dropped (same city as Bangalore, was double-
 # counting search combos), Gurugram dropped for now. Pune added back.
 LOCATIONS = ["Bangalore", "Hyderabad", "Pune"]

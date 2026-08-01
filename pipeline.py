@@ -13,6 +13,7 @@ from job_filters import (
     TARGET_ROLES, ROLE_WORD_GROUPS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
     BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES, BIG_COMPANY_BONUS,
     MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS, MIN_EXPERIENCE_YEARS,
+    EXCLUDED_ROLE_PHRASES, EXCLUDED_ROLE_REDEEMERS,
 )
 from config import PROXIES, MIN_SALARY_LPA
 
@@ -107,6 +108,12 @@ def role_matches(title: str):
     # "AI Engineer_ MLOps") — normalize it to a space first or those
     # wouldn't get a boundary where one's clearly intended.
     title = title.lower().replace("_", " ")
+
+    for phrase in EXCLUDED_ROLE_PHRASES:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", title):
+            if not any(re.search(r"\b" + re.escape(w) + r"\b", title) for w in EXCLUDED_ROLE_REDEEMERS):
+                return False
+
     return any(
         all(re.search(r"\b" + re.escape(word) + r"\b", title) for word in group)
         for group in ROLE_WORD_GROUPS
