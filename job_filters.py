@@ -154,11 +154,40 @@ MIN_EXPERIENCE_YEARS = 5
 # Employee-count thresholds + bonus points for the "big company" scoring
 # boost in pipeline.compute_confidence(). jobspy reports company size as a
 # bucketed string (e.g. "10,000+", "1,001 to 5,000") — parsed via
-# pipeline.parse_company_size(). Raised 2026-07 from 15/7 to 25/12 — company
-# size was previously a minor tiebreaker; now a genuinely significant
-# ranking factor so large/well-paying companies surface preferentially,
-# not just get a nudge over an equally-matched small company.
+# pipeline.parse_company_size().
+#
+# Lowered back down 2026-08 (25/12 -> 10/5, set 2026-07) plus KEYWORD_MATCH_CAP/
+# ATS_MATCH_BONUS added below — confirmed live against the real production
+# DB (3,311 rows) that the 25/12 company bonus, stacked on top of a +40
+# ATS-type bonus that ~83% of ALL postings already receive (detect_ats()
+# scores anything not literally unrecognized as "non-generic", so LinkedIn/
+# Naukri/Indeed postings get the same +40 as an actual Workday listing),
+# was propping up repeat Genpact/PwC postings (10 real keyword matches,
+# confidence 0.710) above genuinely stronger-fit postings at companies
+# jobspy didn't report a size for (12-15 real keyword matches, confidence
+# only 0.472-0.490 purely because company_size came back 0). Simulating
+# the new weights across all 3,311 rows: 20 of the current top-40 postings
+# by confidence are Genpact/PwC repeats propped up mainly by the company
+# bonus and drop out, replaced by 20 postings with materially higher real
+# keyword-match counts that were previously buried near 0.47-0.49.
 BIG_COMPANY_MIN_EMPLOYEES = 1000
-BIG_COMPANY_BONUS = 25
+BIG_COMPANY_BONUS = 10
 MID_COMPANY_MIN_EMPLOYEES = 200
-MID_COMPANY_BONUS = 12
+MID_COMPANY_BONUS = 5
+
+# compute_confidence() previously ran keyword match count through
+# resume_scorer.score_resume() (0.6 per match + a placeholder ATS score
+# worth up to 40) — that function is shared with dynamic_resume_builder.py's
+# actual tailored-RESUME quality scoring (real ATS formatting/structure
+# check), a genuinely different concern; reusing it here via a fake
+# ats_result was a confusing coincidence, not an intentional shared
+# formula, and its 0.6-per-match weighting made keyword fit almost
+# irrelevant next to the flat ATS/company bonuses. compute_confidence()
+# now has its own formula (see pipeline.py) where keyword match is the
+# dominant factor: matches are scaled against KEYWORD_MATCH_CAP (chosen
+# from the real distribution — median match count is 6, so 12 represents
+# a genuinely strong, not just typical, fit) up to KEYWORD_MATCH_WEIGHT
+# points, with the ATS/company-size bonuses reduced to real tiebreakers.
+KEYWORD_MATCH_CAP = 12
+KEYWORD_MATCH_WEIGHT = 75
+ATS_MATCH_BONUS = 15

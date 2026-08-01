@@ -8,12 +8,12 @@ from jobspy import scrape_jobs
 from shared_utils import normalize_job, keyword_matches, blocked_job
 from database import save_job, get_connection
 from ats_detector import detect_ats
-from resume_scorer import score_resume
 from job_filters import (
     TARGET_ROLES, ROLE_WORD_GROUPS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
     BLOCKED_KEYWORDS, TITLE_ONLY_BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES,
     BIG_COMPANY_BONUS, MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS,
     MIN_EXPERIENCE_YEARS, EXCLUDED_ROLE_PHRASES, EXCLUDED_ROLE_REDEEMERS,
+    KEYWORD_MATCH_CAP, KEYWORD_MATCH_WEIGHT, ATS_MATCH_BONUS,
 )
 from config import PROXIES, MIN_SALARY_LPA
 
@@ -139,18 +139,21 @@ def company_size_bonus(employees: int) -> int:
     return 0
 
 def compute_confidence(job: dict):
-    # Calculate components
+    # Keyword match is the dominant factor (up to KEYWORD_MATCH_WEIGHT
+    # points), scaled against KEYWORD_MATCH_CAP so a genuinely strong match
+    # count (not just clearing MIN_MATCH_COUNT) is what earns top marks.
+    # ATS-type and company-size are real tiebreakers only now, not
+    # co-equal factors — see job_filters.py for why (confirmed live against
+    # production data: the old weights let big-company postings with fewer
+    # real keyword matches outrank smaller/unlisted-size postings with a
+    # visibly stronger match to the actual JD).
     text = (job["title"] + " " + job["description"]).lower()
     matches = keyword_matches(text, MATCH_KEYWORDS)
     ats_url = detect_ats(job["url"])
 
-    # Fake/Placeholder ats_result structure
-    ats_result = {"score": 100 if ats_url != "generic" else 0}
-
-    # Use imported score_resume, then boost jobs from bigger companies —
-    # tiebreaker on top of the actual JD/keyword match, not a replacement for it.
-    confidence = score_resume(len(matches), ats_result)
-    confidence = min(confidence + company_size_bonus(job.get("company_size", 0)), 100)
+    keyword_score = min(len(matches) / KEYWORD_MATCH_CAP, 1.0) * KEYWORD_MATCH_WEIGHT
+    ats_bonus = ATS_MATCH_BONUS if ats_url != "generic" else 0
+    confidence = min(keyword_score + ats_bonus + company_size_bonus(job.get("company_size", 0)), 100)
 
     return confidence, matches, None
 
