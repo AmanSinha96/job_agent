@@ -145,6 +145,22 @@ TITLE_ONLY_BLOCKED_KEYWORDS = {
     "marketing",
 }
 
+# Third-party recruiting marketplaces that repost jobs on LinkedIn/Indeed
+# under their own name as if THEY were the employer — confirmed live
+# against production data: "Hire Feed" and "Hired" postings both read
+# "Payout: $X/hour ... We are hiring for [some other company]", Scoutit's
+# read "for our client: Bessemer Venture Partners", Talentgigs' are
+# templated agency briefs, not a direct company JD. Together ~180 rows
+# (5.4%) of the real production DB. Blocked on company name rather than
+# any JD-text keyword since the postings' actual content varies (that's
+# the marketplace pattern) but the reposting entity's name doesn't.
+BLOCKED_COMPANIES = {
+    "hire feed",
+    "scoutit",
+    "hired",
+    "talentgigs",
+}
+
 # Minimum years of experience a posting must require to be kept — a JD
 # stating a lower experience range (e.g. "0-3 years") gets rejected even if
 # it doesn't use an obvious junior/entry keyword above. See

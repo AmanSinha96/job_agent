@@ -13,7 +13,7 @@ from job_filters import (
     BLOCKED_KEYWORDS, TITLE_ONLY_BLOCKED_KEYWORDS, BIG_COMPANY_MIN_EMPLOYEES,
     BIG_COMPANY_BONUS, MID_COMPANY_MIN_EMPLOYEES, MID_COMPANY_BONUS,
     MIN_EXPERIENCE_YEARS, EXCLUDED_ROLE_PHRASES, EXCLUDED_ROLE_REDEEMERS,
-    KEYWORD_MATCH_CAP, KEYWORD_MATCH_WEIGHT, ATS_MATCH_BONUS,
+    KEYWORD_MATCH_CAP, KEYWORD_MATCH_WEIGHT, ATS_MATCH_BONUS, BLOCKED_COMPANIES,
 )
 from config import PROXIES, MIN_SALARY_LPA
 
@@ -163,7 +163,11 @@ def should_keep(job: dict):
     # 1. Role filter
     if not role_matches(job["title"]):
         return False, "role_mismatch"
-        
+
+    # 1b. Recruiting-marketplace company blocklist — see job_filters.py.
+    if job["company"].strip().lower() in BLOCKED_COMPANIES:
+        return False, "blocked_company"
+
     # 2. Location filter
     if not location_matches(job["location"]):
         return False, "location_mismatch"
