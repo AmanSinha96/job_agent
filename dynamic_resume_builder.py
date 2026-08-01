@@ -335,7 +335,7 @@ def build_job_specific_resume(
 
         candidate=profile.get(
 
-            "name",
+            "full_name",
 
             "Candidate",
 
@@ -436,12 +436,13 @@ def build_job_specific_resume(
     # ------------------------------------------------------
     # Refresh Profile
     # ------------------------------------------------------
+    # Merge, don't replace — build_profile() only returns
+    # summary/skills/experience/projects freshly parsed from the
+    # document; replacing the whole dict silently dropped full_name/
+    # email/phone that load_profile() originally supplied, which is
+    # why every generated resume was filed as "Candidate_...".
 
-    profile = build_profile(
-
-        parser
-
-    )
+    profile = {**profile, **build_profile(parser)}
 
     # ------------------------------------------------------
     # Generate Summary
@@ -505,7 +506,7 @@ def build_job_specific_resume(
 
         candidate=profile.get(
 
-            "name",
+            "full_name",
 
             "Candidate",
 
