@@ -637,6 +637,28 @@ def fetch_oracle_cloud(company, host, site, roles, role_matches, hours_old=None)
 # nothing raises an exception, it just quietly contributes nothing forever.
 WATCHLIST_STALE_THRESHOLD = 5
 
+# scrape_watchlist() age-filters on this instead of the sweep's own
+# hours_old (4-12h, tuned for the LinkedIn/Indeed/Naukri firehose) — that
+# ceiling was originally added as a one-time safeguard against a since-fixed
+# bug (jobs.db not persisting between runs, making every posting look "new"
+# regardless of age), not because these sources genuinely refresh every few
+# hours. Confirmed live 2026-08: Greenhouse/Lever have produced ZERO saved
+# jobs in this project's entire history despite the fetchers correctly
+# finding real, role-matched, India-relevant candidates every run (e.g.
+# Databricks "AI Engineer - FDE", Meesho "Senior Analytics Manager") — every
+# single one was 17-954+ days old and got silently discarded by the 4-12h
+# filter before ever reaching should_keep(). These companies' career pages
+# just don't churn listings on the same cadence as LinkedIn/Indeed/Naukri;
+# a still-open req from 6 weeks ago is a real opportunity, not a stale
+# repost. Already-seen URLs are permanently deduped via existing_urls in
+# pipeline.sweep() regardless of age, so relaxing this ceiling can't cause a
+# job to resurface on a later cycle — each one still only gets saved once,
+# on whichever cycle first sees it. 60 days keeps out multi-year-old,
+# likely-abandoned reqs (confirmed live: a Meesho listing 954 days old) while
+# comfortably covering everything found genuinely open right now (17-45
+# days).
+WATCHLIST_MAX_AGE_HOURS = 24 * 60
+
 
 def _track_company_health(company, raw_count):
     """Returns True the cycle a company first crosses
@@ -656,17 +678,15 @@ def scrape_watchlist(roles, hours_old=None):
     own jobs API. Runs synchronously (plain HTTP, no browser) — call via
     asyncio.to_thread() from pipeline.sweep() like naukri_playwright is.
 
-    hours_old filters by each source's own posting-date field (Greenhouse
-    first_published, Lever createdAt, Workday's "Posted N Days Ago" text,
-    Amazon's posted_date) — confirmed live these are all actually available,
-    despite this module originally assuming otherwise and skipping age
-    filtering entirely. That gap meant every company's full current listing
-    (regardless of how old) looked "new" the first time jobs.db ever saw it,
-    which is exactly what happened while jobs.db wasn't persisting (see
-    pipeline.py/the workflow git-push fix) — postings 3-5+ days old kept
-    surfacing as if fresh. A job whose age can't be determined (parse
-    failure, missing field) is kept rather than dropped, to avoid hiding a
-    genuinely fresh posting over a parsing edge case.
+    `hours_old` (the sweep's own 4-12h freshness ceiling, tuned for the
+    LinkedIn/Indeed/Naukri firehose) is accepted for call-site symmetry with
+    the other sources but deliberately NOT used for age filtering here — see
+    WATCHLIST_MAX_AGE_HOURS above for why. Age comes from each source's own
+    posting-date field (Greenhouse first_published, Lever createdAt,
+    Workday's "Posted N Days Ago" text, Amazon's posted_date). A job whose
+    age can't be determined (parse failure, missing field) is kept rather
+    than dropped, to avoid hiding a genuinely fresh posting over a parsing
+    edge case.
 
     Returns (jobs, newly_stale_companies) — the second element is normally
     empty; when non-empty, the caller should surface it (see
@@ -724,7 +744,7 @@ def scrape_watchlist(roles, hours_old=None):
         # stale" alerts for companies working perfectly fine, just without
         # a role-matched AND recent-enough posting that particular cycle).
         company_jobs, raw_count = fetch_workday(
-            company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches, hours_old)
+            company, cfg["tenant"], cfg["host"], cfg["site"], roles, role_matches, WATCHLIST_MAX_AGE_HOURS)
         jobs.extend(company_jobs)
         if _track_company_health(company, raw_count):
             newly_stale.append(company)
@@ -734,13 +754,13 @@ def scrape_watchlist(roles, hours_old=None):
                         WORKDAY_BUDGET_SECONDS, len(skipped), ", ".join(skipped))
 
     for company, slug in SMARTRECRUITERS_COMPANIES.items():
-        company_jobs, raw_count = fetch_smartrecruiters(company, slug, roles, role_matches, hours_old)
+        company_jobs, raw_count = fetch_smartrecruiters(company, slug, roles, role_matches, WATCHLIST_MAX_AGE_HOURS)
         jobs.extend(company_jobs)
         if _track_company_health(company, raw_count):
             newly_stale.append(company)
 
     for company, cfg in ORACLE_CLOUD_COMPANIES.items():
-        company_jobs, raw_count = fetch_oracle_cloud(company, cfg["host"], cfg["site"], roles, role_matches, hours_old)
+        company_jobs, raw_count = fetch_oracle_cloud(company, cfg["host"], cfg["site"], roles, role_matches, WATCHLIST_MAX_AGE_HOURS)
         jobs.extend(company_jobs)
         if _track_company_health(company, raw_count):
             newly_stale.append(company)
@@ -751,10 +771,9 @@ def scrape_watchlist(roles, hours_old=None):
     total_fetched = len(jobs)
     jobs = [j for j in jobs if _is_india_relevant(j["location"])]
 
-    if hours_old is not None:
-        before_age_filter = len(jobs)
-        jobs = [j for j in jobs if j["age_hours"] is None or j["age_hours"] <= hours_old]
-        logger.info("Age filter (hours_old=%s): %d -> %d postings.", hours_old, before_age_filter, len(jobs))
+    before_age_filter = len(jobs)
+    jobs = [j for j in jobs if j["age_hours"] is None or j["age_hours"] <= WATCHLIST_MAX_AGE_HOURS]
+    logger.info("Age filter (max_age_hours=%s): %d -> %d postings.", WATCHLIST_MAX_AGE_HOURS, before_age_filter, len(jobs))
 
     total_companies = (len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES)
                        + len(SMARTRECRUITERS_COMPANIES) + len(ORACLE_CLOUD_COMPANIES) + 1)
