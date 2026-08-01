@@ -37,6 +37,15 @@ logger = logging.getLogger("cloud_run")
 
 TAILOR_TOP_N = 15
 
+# "Other Strong Matches" previously showed every job outside the tailored
+# top 15 (up to SELECT_TOP_N=40 minus 15, so ~25 rows) — confirmed by audit
+# to read as undifferentiated noise at that length with no attached resume
+# to differentiate them anyway. Capped to the strongest few by confidence
+# instead; the count in the section header still reflects the true total,
+# and the note below states how many were trimmed rather than silently
+# dropping them.
+OTHER_MATCHES_DISPLAY_LIMIT = 10
+
 # Fixed +5:30 offset rather than zoneinfo("Asia/Kolkata") — India has no DST
 # so the offset never changes, and this avoids depending on the GitHub
 # Actions runner having the IANA tz database installed.
@@ -126,6 +135,40 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     def salary_display(j):
         return j.get("salary") or "—"
 
+    def posting_age_display(j):
+        # posted_at is an absolute timestamp (see shared_utils.normalize_job)
+        # so age is computed fresh here at render time, not frozen at scrape
+        # time — a job scraped hours ago and only now reaching a digest still
+        # shows its true age. Previously collected per-source (career_sites.py
+        # / naukri_playwright.py) and immediately discarded; jobspy's own
+        # date_posted field wasn't even read. Most useful for watchlist-
+        # sourced jobs specifically, now that their age ceiling is 60 days
+        # (see career_sites.WATCHLIST_MAX_AGE_HOURS) rather than a few hours —
+        # this is what lets a "still open, 45 days old" listing read
+        # differently from a same-day one instead of looking identical.
+        posted_at = j.get("posted_at")
+        if not posted_at:
+            return "—"
+        try:
+            dt = datetime.fromisoformat(posted_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+        except Exception:
+            return "—"
+        if hours < 24:
+            return "today"
+        return f"{int(hours // 24)}d ago"
+
+    def company_size_display(j):
+        # Collected via jobspy's company_num_employees / hardcoded
+        # COMPANY_SIZE_HINTS for watchlist sources (see career_sites.py) but
+        # never rendered anywhere before this — used in ranking
+        # (compute_confidence()'s company-size tiebreaker) yet invisible to
+        # the person actually reading the digest.
+        size = j.get("company_size") or 0
+        return f"~{size:,}" if size else "—"
+
     def match_display(j):
         # confidence is the PRE-tailoring score (keyword match + ATS/company
         # bonus) — the one that actually varies and is what got this job
@@ -144,14 +187,16 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
 
     def tailored_rows():
         if not tailored:
-            return "<tr><td colspan='7' style='color:#888'>None this cycle</td></tr>"
+            return "<tr><td colspan='9' style='color:#888'>None this cycle</td></tr>"
         rows = ""
         for j in tailored:
             rows += (
                 f"<tr>"
                 f"<td><a href='{j.get('url','')}' style='color:#2e7d32'>{j.get('title','')}</a></td>"
                 f"<td>{j.get('company','')}</td>"
+                f"<td>{company_size_display(j)}</td>"
                 f"<td>{j.get('location','')}</td>"
+                f"<td>{posting_age_display(j)}</td>"
                 f"<td>{salary_display(j)}</td>"
                 f"<td>{j.get('board','')}</td>"
                 f"<td style='font-size:12px'>{resume_file(j)}</td>"
@@ -162,14 +207,17 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
 
     def other_rows():
         if not other_matches:
-            return "<tr><td colspan='7' style='color:#888'>None this cycle</td></tr>"
+            return "<tr><td colspan='9' style='color:#888'>None this cycle</td></tr>"
+        shown = sorted(other_matches, key=lambda j: j.get("confidence", 0), reverse=True)[:OTHER_MATCHES_DISPLAY_LIMIT]
         rows = ""
-        for j in other_matches:
+        for j in shown:
             rows += (
                 f"<tr>"
                 f"<td><a href='{j.get('url','')}' style='color:#e65100'>{j.get('title','')}</a></td>"
                 f"<td>{j.get('company','')}</td>"
+                f"<td>{company_size_display(j)}</td>"
                 f"<td>{j.get('location','')}</td>"
+                f"<td>{posting_age_display(j)}</td>"
                 f"<td>{salary_display(j)}</td>"
                 f"<td>{j.get('board','')}</td>"
                 f"<td style='font-size:12px'>—</td>"
@@ -203,18 +251,19 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     <h3 style="color:#2e7d32">✅ Tailored & Ready to Apply ({len(tailored)})</h3>
     <p style="color:#555;font-size:13px">Tailored resume for each is attached — the "Resume File" column below matches the attachment filename, so it's easy to find the right one.</p>
     <table style="{table_style}">
-      <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th>
-          <th style="{th_style}">Location</th><th style="{th_style}">Salary</th>
+      <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th><th style="{th_style}">Size</th>
+          <th style="{th_style}">Location</th><th style="{th_style}">Posted</th><th style="{th_style}">Salary</th>
           <th style="{th_style}">Source</th><th style="{th_style}">Resume File</th>
           <th style="{th_style}">Match / Why</th></tr>
       {tailored_rows()}
     </table>
 
     <h3 style="color:#e65100;margin-top:24px">⚡ Other Strong Matches — Not Tailored ({len(other_matches)})</h3>
-    <p style="color:#555;font-size:13px">Still a strong match, just outside the top {TAILOR_TOP_N} we build tailored resumes for — apply with your base resume, or ask for one of these to be tailored too.</p>
+    <p style="color:#555;font-size:13px">Still a strong match, just outside the top {TAILOR_TOP_N} we build tailored resumes for — apply with your base resume, or ask for one of these to be tailored too.
+    {f"Showing the top {OTHER_MATCHES_DISPLAY_LIMIT} by fit out of {len(other_matches)} — the rest are still saved and rankable, just not worth listing individually every cycle." if len(other_matches) > OTHER_MATCHES_DISPLAY_LIMIT else ""}</p>
     <table style="{table_style}">
-      <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th>
-          <th style="{th_style}">Location</th><th style="{th_style}">Salary</th>
+      <tr><th style="{th_style}">Role</th><th style="{th_style}">Company</th><th style="{th_style}">Size</th>
+          <th style="{th_style}">Location</th><th style="{th_style}">Posted</th><th style="{th_style}">Salary</th>
           <th style="{th_style}">Source</th><th style="{th_style}">Resume File</th>
           <th style="{th_style}">Match / Why</th></tr>
       {other_rows()}

@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import random
+from datetime import datetime, timezone
 import pandas as pd
 from jobspy import scrape_jobs
 from shared_utils import normalize_job, keyword_matches, blocked_job
@@ -237,6 +238,7 @@ def save_processed_job(job, status="new"):
         "keywords": ",".join(matches),
         "description": job["description"],
         "company_size": job.get("company_size", 0),
+        "posted_at": job.get("posted_at"),
     }
     save_job(record)
     return record
@@ -246,6 +248,28 @@ def _cell(value):
     if isinstance(value, float) and pd.isna(value):
         return None
     return value
+
+def _jobspy_age_hours(date_posted) -> float | None:
+    # jobspy's date_posted is a plain date (day-granular, not a timestamp) —
+    # same precision tradeoff already accepted for Workday's "Posted N Days
+    # Ago" text elsewhere in this project. Previously fetched and immediately
+    # discarded; now feeds the digest's posting-age column (see
+    # cloud_run.build_digest_html).
+    date_posted = _cell(date_posted)
+    # _cell() only catches NaN (a float); jobspy's actual "missing" sentinel
+    # for a date column is pd.NaT, a different type that isinstance(value,
+    # float) doesn't match — confirmed live: an unguarded NaT silently
+    # produced a ~2026-YEAR-old "age", not a missing value, because
+    # pd.NaT.to_pydatetime() below doesn't raise, it returns datetime.min.
+    if date_posted is None or pd.isna(date_posted):
+        return None
+    try:
+        if hasattr(date_posted, "to_pydatetime"):
+            date_posted = date_posted.to_pydatetime().date()
+        dt = datetime.combine(date_posted, datetime.min.time(), tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+    except Exception:
+        return None
 
 def _jobspy_row_to_raw(row: dict, search_city: str, site_override: str | None = None) -> dict:
     return {
@@ -259,6 +283,7 @@ def _jobspy_row_to_raw(row: dict, search_city: str, site_override: str | None = 
         "salary": _salary_string(row),
         "board": site_override or _cell(row.get("site")) or "unknown",
         "company_size": parse_company_size(_cell(row.get("company_num_employees"))),
+        "age_hours": _jobspy_age_hours(row.get("date_posted")),
     }
 
 _INTERVAL_TO_ANNUAL_MULTIPLIER = {"monthly": 12, "weekly": 52, "daily": 260, "hourly": 2080}

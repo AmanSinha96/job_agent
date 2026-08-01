@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone, timedelta
 from database import get_connection
 
 def clean_text(value: str | None) -> str:
@@ -20,7 +21,26 @@ def normalize_job(raw: dict) -> dict:
     description = clean_text(raw.get("description") or raw.get("description_text") or "")
     url = clean_text(raw.get("url") or raw.get("apply_url") or raw.get("applyUrl") or "")
     salary = clean_text(raw.get("salary") or "")
-    return {"title": title, "company": company, "location": location, "description": description, "url": url, "salary": salary}
+
+    # Each source computes "how many hours old is this posting" differently
+    # (career_sites.py: age_hours, naukri_playwright.py: hours_ago,
+    # jobspy-sourced: age_hours via pipeline._jobspy_row_to_raw's date_posted
+    # conversion) — normalized here to a single absolute posted_at timestamp
+    # so it survives however long the row sits in the DB before being
+    # rendered in a digest, rather than storing a relative "hours old" value
+    # that would go stale the moment it's saved.
+    age_hours = raw.get("age_hours")
+    if age_hours is None:
+        age_hours = raw.get("hours_ago")
+    posted_at = None
+    if age_hours is not None:
+        posted_at = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat()
+
+    return {
+        "title": title, "company": company, "location": location,
+        "description": description, "url": url, "salary": salary,
+        "posted_at": posted_at,
+    }
 
 def already_exists(url: str):
     conn = get_connection()

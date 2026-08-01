@@ -66,6 +66,7 @@ def init_db():
     for stmt in (
         "ALTER TABLE jobs ADD COLUMN company_size INTEGER DEFAULT 0",
         "ALTER TABLE jobs ADD COLUMN keywords TEXT",
+        "ALTER TABLE jobs ADD COLUMN posted_at TIMESTAMP",
     ):
         try:
             conn.execute(stmt)
@@ -148,9 +149,10 @@ def save_job(job):
             screenshot,
             description,
             company_size,
-            keywords
+            keywords,
+            posted_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job.get("title"),
         job.get("company"),
@@ -166,7 +168,8 @@ def save_job(job):
         job.get("screenshot"),
         job.get("description", ""),
         job.get("company_size", 0),
-        job.get("keywords", "")
+        job.get("keywords", ""),
+        job.get("posted_at"),
     ))
 
     conn.commit()
