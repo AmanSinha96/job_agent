@@ -448,7 +448,7 @@ def build_job_specific_resume(
     # Generate Summary
     # ------------------------------------------------------
 
-    summary = generate_summary(
+    summary, summary_source = generate_summary(
 
         profile,
 
@@ -623,6 +623,10 @@ def build_job_specific_resume(
         "role_type":
 
             role_type,
+
+        "summary_source":
+
+            summary_source,
 
         "cached":
 

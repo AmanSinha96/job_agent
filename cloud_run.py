@@ -66,6 +66,7 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
     we still end up with TAILOR_TOP_N tailored resumes whenever possible.
     """
     tailored, other_matches = [], []
+    summary_sources = []
     for job in jobs:
         if len(tailored) >= TAILOR_TOP_N:
             other_matches.append(job)
@@ -77,6 +78,28 @@ def tailor_jobs(jobs: list[dict], profile: dict) -> tuple[list[dict], list[dict]
             other_matches.append({**job, "reason": str(e)})
             continue
         tailored.append({**job, **result})
+        if "summary_source" in result:
+            summary_sources.append(result["summary_source"])
+
+    # Surface Groq/Gemini health as a check-run annotation — previously the
+    # only signal was logger.warning inside summary_generator.py, invisible
+    # without full log access (403s without admin/write auth on this repo).
+    if summary_sources:
+        fallback_count = summary_sources.count("fallback")
+        gemini_count = summary_sources.count("gemini")
+        if fallback_count:
+            gha_annotate(
+                "error",
+                f"Both Groq and Gemini failed for {fallback_count}/{len(summary_sources)} tailored resumes this cycle "
+                "— static fallback summary used. Check GROQ_API_KEY/GEMINI_API_KEY secrets.",
+            )
+        elif gemini_count:
+            gha_annotate(
+                "warning",
+                f"Groq failed for {gemini_count}/{len(summary_sources)} tailored resumes this cycle, fell back to Gemini "
+                "— check GROQ_API_KEY/quota.",
+            )
+
     return tailored, other_matches
 
 

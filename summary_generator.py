@@ -156,17 +156,22 @@ Rules
 8. Return only the summary.
 """
 
+    # Returns (summary_text, source) — source lets callers (cloud_run.py)
+    # surface which path actually served each job as a GitHub Actions
+    # annotation, since a silent Groq/Gemini failure here previously had no
+    # visible signal outside of logger.warning (invisible without log
+    # access, which 403s without admin/write auth on this repo).
     try:
-        return _clean_llm_output(_call_groq(prompt))
+        return _clean_llm_output(_call_groq(prompt)), "groq"
     except Exception as e:
         logger.warning("Groq summary generation failed, falling back to Gemini: %s", e)
 
     try:
-        return _clean_llm_output(_call_gemini(prompt))
+        return _clean_llm_output(_call_gemini(prompt)), "gemini"
     except Exception as e:
         logger.warning("Gemini summary generation failed, using static fallback: %s", e)
 
-    return _static_fallback_summary(keywords)
+    return _static_fallback_summary(keywords), "fallback"
 
 
 def _static_fallback_summary(keywords) -> str:
