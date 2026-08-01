@@ -542,6 +542,8 @@ def build_job_specific_resume(
 
         keywords,
 
+        document,
+
     )
 
     keyword_match = keyword_match_score(
