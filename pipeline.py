@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from jobspy import scrape_jobs
 from shared_utils import normalize_job, keyword_matches, blocked_job
-from database import save_job, get_connection
+from database import save_job, get_connection, load_dedup_state, normalize_url, job_fingerprint
 from ats_detector import detect_ats
 from job_filters import (
     TARGET_ROLES, ROLE_WORD_GROUPS, LOCATIONS, MATCH_KEYWORDS, MIN_MATCH_COUNT,
@@ -21,6 +21,27 @@ from config import PROXIES, MIN_SALARY_LPA
 # Raised from 30 -> 40 so a strong week doesn't get cut off; tailoring still
 # only ever runs for the top 15 regardless (see cloud_run.TAILOR_TOP_N).
 SELECT_TOP_N = 40
+
+# Firehose sources (LinkedIn/Indeed/Naukri/job-board APIs) — reject anything
+# whose own posted date is older than this, even if the site's "last N hours"
+# filter returned it. Indeed's hours_old filters on "dateOnIndeed", which a
+# repost/refresh bumps — confirmed live: a Metropolis Healthcare "Data
+# Analyst" listing posted 2026-03-10 kept coming back as "new" through
+# August. Day-granular dates (jobspy) mean "yesterday" can read up to ~48h,
+# hence 72h rather than 24h. Watchlist (company career sites) has its own,
+# deliberately longer ceiling — see career_sites.WATCHLIST_MAX_AGE_HOURS.
+FIREHOSE_MAX_AGE_HOURS = 72
+
+# select() only considers jobs saved within this window, so if a digest email
+# fails for a few days, the backlog doesn't crowd out fresh postings forever.
+SELECT_MAX_AGE_DAYS = 7
+
+# Every source in the --sites list that isn't a jobspy site_name.
+NON_JOBSPY_SOURCES = {"naukri", "watchlist", "remote_boards"}
+
+# `board` values produced by career_sites.scrape_watchlist() — exempt from
+# FIREHOSE_MAX_AGE_HOURS (they have their own 60-day ceiling).
+WATCHLIST_BOARDS = {"greenhouse", "lever", "workday", "amazon", "smartrecruiters", "oracle_cloud", "ashby"}
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +141,12 @@ def role_matches(title: str):
         for group in ROLE_WORD_GROUPS
     )
 
+_LOCATION_ALIASES = {"bengaluru": "bangalore", "gurugram": "gurgaon"}
+
 def location_matches(location: str):
     location = location.lower()
+    for alias, canonical in _LOCATION_ALIASES.items():
+        location = location.replace(alias, canonical)
     return any(loc.lower() in location for loc in LOCATIONS) or "remote" in location
 
 def parse_company_size(size_text) -> int:
@@ -240,8 +265,7 @@ def save_processed_job(job, status="new"):
         "company_size": job.get("company_size", 0),
         "posted_at": job.get("posted_at"),
     }
-    save_job(record)
-    return record
+    return save_job(record)
 
 def _cell(value):
     """JobSpy DataFrame cells come back as NaN for missing data; normalize to None."""
@@ -271,13 +295,26 @@ def _jobspy_age_hours(date_posted) -> float | None:
     except Exception:
         return None
 
+def _jobspy_location(row: dict, search_city: str) -> str:
+    # Trust the city we searched for over each site's own location
+    # formatting (Indeed often returns "KA, IN" instead of "Bangalore").
+    if search_city != "Remote":
+        return search_city
+    # For the "Remote" search, only label it Remote if the posting actually
+    # is — Indeed lets only one of hours_old / is_remote apply per query and
+    # hours_old wins, so its "Remote" search really returns every India-wide
+    # posting. Labelling all of those "Remote" let Mumbai/Delhi/Chennai
+    # on-site roles straight through location_matches().
+    site_location = str(_cell(row.get("location")) or "")
+    if _cell(row.get("is_remote")) or "remote" in site_location.lower():
+        return "Remote"
+    return site_location
+
 def _jobspy_row_to_raw(row: dict, search_city: str, site_override: str | None = None) -> dict:
     return {
         "title": _cell(row.get("title")),
         "company": _cell(row.get("company")),
-        # Trust the city/"Remote" we searched for over each site's own location
-        # formatting (Indeed often returns "KA, IN" instead of "Bangalore").
-        "location": search_city,
+        "location": _jobspy_location(row, search_city),
         "description": _cell(row.get("description")) or "",
         "url": _cell(row.get("job_url_direct")) or _cell(row.get("job_url")) or "",
         "salary": _salary_string(row),
@@ -306,24 +343,37 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
     """Phase 1: Sweep new jobs via python-jobspy across the given sites."""
     logger.info("Running Sweep Phase for sites=%s, hours_old=%s...", sites, hours_old)
 
-    # Load existing URLs once instead of a DB round-trip per scraped row
-    # (already_exists() opens+closes a connection every call — across
-    # hundreds of rows per sweep that adds up for no reason).
-    conn = get_connection()
-    existing_urls = {row["url"] for row in conn.execute("SELECT url FROM jobs").fetchall()}
-    conn.close()
+    # Load dedup state once instead of a DB round-trip per scraped row.
+    # Dedup is by normalized URL AND by company+title fingerprint — the same
+    # req routinely appears under several URLs (one per city on LinkedIn, a
+    # fresh tracking token per scrape on Indeed cross-posts, plus the same
+    # req on several boards at once). See database.DUPLICATE_LOOKBACK_DAYS.
+    existing_urls, existing_fingerprints = load_dedup_state()
+    skipped = {"duplicate": 0, "too_old": 0, "filtered": 0}
 
     def process_and_save(raw: dict) -> bool:
         job = normalize_job(raw)
+        job["url"] = normalize_url(job["url"])
         job["board"] = raw["board"]
         job["company_size"] = raw.get("company_size", 0)
-        if not job["url"] or job["url"] in existing_urls:
+        fingerprint = job_fingerprint(job["company"], job["title"])
+        if not job["url"] or job["url"] in existing_urls or (fingerprint and fingerprint in existing_fingerprints):
+            skipped["duplicate"] += 1
+            return False
+        age = raw.get("age_hours", raw.get("hours_ago"))
+        if raw["board"] not in WATCHLIST_BOARDS and age is not None and age > FIREHOSE_MAX_AGE_HOURS:
+            skipped["too_old"] += 1
             return False
         keep, result = should_keep(job)
         if not keep:
+            skipped["filtered"] += 1
             return False
-        save_processed_job(job, status="new")
+        if not save_processed_job(job, status="new"):
+            skipped["duplicate"] += 1
+            return False
         existing_urls.add(job["url"])
+        if fingerprint:
+            existing_fingerprints.add(fingerprint)
         return True
 
     saved = 0
@@ -334,7 +384,7 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
     # jobspy's own Naukri scraper hits the API directly and gets a hard 406
     # every time. See naukri_playwright.py for why, and its expected ~25%
     # per-request failure rate (already handled there, not here).
-    jobspy_sites = [s for s in sites if s.lower() not in ("naukri", "watchlist")]
+    jobspy_sites = [s for s in sites if s.lower() not in NON_JOBSPY_SOURCES]
     if "naukri" in [s.lower() for s in sites]:
         from naukri_playwright import scrape_naukri
         try:
@@ -362,42 +412,65 @@ async def sweep(sites: list[str], hours_old: int, roles=TARGET_ROLES, locations=
             if process_and_save(raw):
                 saved += 1
 
+    if "remote_boards" in [s.lower() for s in sites]:
+        # Free public job-board APIs (remote roles open to India) — see
+        # job_boards.py.
+        from job_boards import scrape_remote_boards
+        try:
+            board_jobs = await asyncio.to_thread(scrape_remote_boards, roles, hours_old)
+        except Exception as e:
+            logger.error("Remote job-board sweep failed entirely: %s", e)
+            board_jobs = []
+        for raw in board_jobs:
+            if process_and_save(raw):
+                saved += 1
+
     if not jobspy_sites:
-        logger.info("Sweep Phase complete. Saved %d new jobs.", saved)
+        logger.info("Sweep Phase complete. Saved %d new jobs (skipped: %s).", saved, skipped)
         return saved, stale_watchlist_companies
 
+    # One scrape_jobs() call per site rather than all sites in one call —
+    # jobspy re-raises any single site's exception for the whole call, so one
+    # blocked site (e.g. Glassdoor 403ing a runner IP) would throw away every
+    # other site's rows for that role/city too.
+    per_site = {site: {"rows": 0, "saved": 0, "errors": 0} for site in jobspy_sites}
     for role in roles:
         for city in search_locations:
             is_remote = city == "Remote"
-            try:
-                df = scrape_jobs(
-                    site_name=jobspy_sites,
-                    search_term=role,
-                    google_search_term=f"{role} jobs in {city}, India",
-                    location="India" if is_remote else f"{city}, India",
-                    is_remote=is_remote,
-                    results_wanted=40,
-                    hours_old=hours_old,
-                    country_indeed="India",
-                    linkedin_fetch_description=True,
-                    proxies=PROXIES or None,
-                )
-            except Exception as e:
-                logger.error("jobspy scrape failed for role=%s city=%s: %s", role, city, e)
-                continue
+            for site in jobspy_sites:
+                try:
+                    df = scrape_jobs(
+                        site_name=[site],
+                        search_term=role,
+                        google_search_term=f"{role} jobs in {city}, India",
+                        location="India" if is_remote else f"{city}, India",
+                        is_remote=is_remote,
+                        results_wanted=40,
+                        hours_old=hours_old,
+                        country_indeed="India",
+                        linkedin_fetch_description=True,
+                        proxies=PROXIES or None,
+                    )
+                except Exception as e:
+                    per_site[site]["errors"] += 1
+                    logger.error("jobspy scrape failed for site=%s role=%s city=%s: %s", site, role, city, e)
+                    continue
 
-            if df is None or df.empty:
-                time.sleep(random.uniform(10, 30))
-                continue
+                if df is None or df.empty:
+                    continue
 
-            for _, row in df.iterrows():
-                raw = _jobspy_row_to_raw(row.to_dict(), city)
-                if process_and_save(raw):
-                    saved += 1
+                per_site[site]["rows"] += len(df)
+                for _, row in df.iterrows():
+                    raw = _jobspy_row_to_raw(row.to_dict(), city)
+                    if process_and_save(raw):
+                        saved += 1
+                        per_site[site]["saved"] += 1
 
             time.sleep(random.uniform(10, 30))
 
-    logger.info("Sweep Phase complete. Saved %d new jobs.", saved)
+    logger.info("jobspy per-site results: %s", per_site)
+
+    logger.info("Sweep Phase complete. Saved %d new jobs (skipped: %s).", saved, skipped)
     return saved, stale_watchlist_companies
 
 def rank():
@@ -426,13 +499,14 @@ def select():
     # 1. Reset current top_pick to ranked
     conn.execute("UPDATE jobs SET status='ranked' WHERE status='top_pick'")
 
-    # 2. Select top N by confidence (JD/keyword match + company-size boost)
+    # 2. Select top N by confidence (JD/keyword match + company-size boost),
+    # among recently saved jobs only — see SELECT_MAX_AGE_DAYS.
     top_picks = conn.execute("""
         SELECT id FROM jobs
-        WHERE status='ranked'
+        WHERE status='ranked' AND scraped_at >= datetime('now', ?)
         ORDER BY confidence DESC, scraped_at DESC
         LIMIT ?
-    """, (SELECT_TOP_N,)).fetchall()
+    """, (f"-{SELECT_MAX_AGE_DAYS} days", SELECT_TOP_N)).fetchall()
 
     # 3. Mark as top_pick
     for row in top_picks:

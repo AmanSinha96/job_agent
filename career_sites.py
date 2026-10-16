@@ -12,6 +12,7 @@ These ATS platforms all expose a free, public, unauthenticated JSON API
 for their own job board — no scraping, no anti-bot risk:
   - Greenhouse:     boards-api.greenhouse.io
   - Lever:          api.lever.co
+  - Ashby:          api.ashbyhq.com/posting-api/job-board/{slug}
   - Workday:        {tenant}.{host}.myworkdayjobs.com/wday/cxs/...
   - SmartRecruiters: api.smartrecruiters.com/v1/companies/{slug}/postings
   - Oracle Fusion Cloud "Candidate Experience":
@@ -192,6 +193,17 @@ ORACLE_CLOUD_COMPANIES = {
     "KPMG": {"host": "ejgk.fa.em2.oraclecloud.com", "site": "CX_1"},
 }
 
+# Ashby public job-board API (api.ashbyhq.com/posting-api/job-board/{slug}) —
+# no auth. Confirmed live 2026-10 with India postings: UiPath (Bangalore),
+# Sarvam AI (Bengaluru/Delhi, India-only), Notion (Hyderabad). Checked but
+# not on Ashby (404): Razorpay, Zepto, Postman, Rippling, Harness;
+# Confluent/Deel boards exist but returned 0 postings.
+ASHBY_COMPANIES = {
+    "UiPath": "uipath",
+    "Sarvam AI": "sarvam",
+    "Notion": "notion",
+}
+
 # Approximate headcount for company_size_bonus() (see job_filters.py) —
 # jobspy-sourced jobs get this from Indeed/LinkedIn's own data; these
 # watchlist sources don't return it, so it's hardcoded per known company.
@@ -211,6 +223,7 @@ COMPANY_SIZE_HINTS = {
     "Verizon": 105000, "AT&T": 140000,
     "ServiceNow": 25000, "JPMorgan Chase": 300000, "American Express": 77000,
     "Goldman Sachs": 45000, "KPMG": 275000,
+    "UiPath": 4000, "Sarvam AI": 300, "Notion": 1000,
 }
 
 
@@ -370,6 +383,46 @@ def fetch_lever(company, slug):
             j.get("descriptionPlain") or _strip_html(j.get("description")),
             j.get("hostedUrl"), "lever",
             age_hours=_lever_age_hours(j),
+        ))
+    return jobs
+
+
+def _ashby_age_hours(job):
+    ts = job.get("publishedAt")
+    if not ts:
+        return None
+    try:
+        return _hours_since(datetime.fromisoformat(ts.replace("Z", "+00:00")))
+    except Exception:
+        return None
+
+
+def fetch_ashby(company, slug):
+    try:
+        resp = requests.get(
+            f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+            headers=_HEADERS, timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("Ashby fetch failed for %s: %s", company, e)
+        return []
+    jobs = []
+    for j in resp.json().get("jobs", []):
+        if j.get("isListed") is False:
+            continue
+        # Primary location plus any secondary ones, so a "Remote" primary
+        # with a "Bengaluru" secondary still passes _is_india_relevant().
+        locations = [j.get("location") or ""] + [
+            (loc or {}).get("location", "") for loc in j.get("secondaryLocations") or []
+        ]
+        country = ((j.get("address") or {}).get("postalAddress") or {}).get("addressCountry") or ""
+        location = ", ".join(l for l in locations + [country] if l)
+        jobs.append(_raw(
+            j.get("title"), company, location,
+            j.get("descriptionPlain") or _strip_html(j.get("descriptionHtml")),
+            j.get("jobUrl"), "ashby",
+            age_hours=_ashby_age_hours(j),
         ))
     return jobs
 
@@ -704,6 +757,8 @@ def scrape_watchlist(roles, hours_old=None):
         track(company, fetch_greenhouse(company, slug))
     for company, slug in LEVER_COMPANIES.items():
         track(company, fetch_lever(company, slug))
+    for company, slug in ASHBY_COMPANIES.items():
+        track(company, fetch_ashby(company, slug))
 
     # Hard wall-clock budget for the whole Workday phase, independent of
     # per-call timeouts. Confirmed live: a full 22-company run took 4.4
@@ -775,7 +830,7 @@ def scrape_watchlist(roles, hours_old=None):
     jobs = [j for j in jobs if j["age_hours"] is None or j["age_hours"] <= WATCHLIST_MAX_AGE_HOURS]
     logger.info("Age filter (max_age_hours=%s): %d -> %d postings.", WATCHLIST_MAX_AGE_HOURS, before_age_filter, len(jobs))
 
-    total_companies = (len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(WORKDAY_COMPANIES)
+    total_companies = (len(GREENHOUSE_COMPANIES) + len(LEVER_COMPANIES) + len(ASHBY_COMPANIES) + len(WORKDAY_COMPANIES)
                        + len(SMARTRECRUITERS_COMPANIES) + len(ORACLE_CLOUD_COMPANIES) + 1)
     logger.info("Watchlist sweep fetched %d raw postings across %d companies, %d India-relevant.",
                 total_fetched, total_companies, len(jobs))

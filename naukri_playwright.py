@@ -17,6 +17,7 @@ the flakiness is inherent to scraping Naukri at all right now.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 import random
@@ -26,7 +27,18 @@ from playwright_stealth import Stealth
 
 logger = logging.getLogger(__name__)
 
-SEARCH_URL = "https://www.naukri.com/{role_slug}-jobs-in-{city_slug}"
+# {page_suffix} is "" for page 1, "-2" for page 2, etc. jobAge=N limits
+# results to postings from the last N days — without it the default
+# relevance-sorted page 1 is mostly weeks-old listings, so only a handful of
+# fresh postings per combo ever came back (confirmed live 2026-10: every
+# saved Naukri job was ~1h old, i.e. only "Just Now"/"Today" cards that
+# happened to rank on page 1).
+SEARCH_URL = "https://www.naukri.com/{role_slug}-jobs-in-{city_slug}{page_suffix}?jobAge={job_age_days}"
+PAGES_PER_COMBO = 2
+# Naukri only shows day-granular ages ("1 Day Ago"), so a window shorter than
+# a day would drop yesterday's postings that no earlier run caught. Overlap
+# with previous runs is free — pipeline.sweep() dedups.
+MIN_WINDOW_HOURS = 24
 JOB_CARD_SELECTOR = ".srp-jobtuple-wrapper"
 BLOCK_SIGNALS = ["recaptcha", "access denied", "unusual traffic", "are you a human"]
 
@@ -123,15 +135,21 @@ def scrape_naukri(roles: list[str], locations: list[str], hours_old: int) -> lis
     the caller should use to apply the hours_old cutoff (Naukri gives no
     server-side freshness filter, unlike jobspy's other sources)."""
     results: list[dict] = []
+    window_hours = max(hours_old, MIN_WINDOW_HOURS)
+    job_age_days = max(1, math.ceil(window_hours / 24))
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=True)
         try:
             for role in roles:
                 role_slug = _slugify(role)
-                for city in locations:
+                for city, page_num in ((c, n) for c in locations for n in range(1, PAGES_PER_COMBO + 1)):
                     city_slug = _slugify(city)
-                    url = SEARCH_URL.format(role_slug=role_slug, city_slug=city_slug)
+                    url = SEARCH_URL.format(
+                        role_slug=role_slug, city_slug=city_slug,
+                        page_suffix="" if page_num == 1 else f"-{page_num}",
+                        job_age_days=job_age_days,
+                    )
 
                     context = browser.new_context(
                         user_agent=USER_AGENT,
@@ -146,8 +164,8 @@ def scrape_naukri(roles: list[str], locations: list[str], hours_old: int) -> lis
                         body = page.inner_text("body").lower()
                         if any(s in body for s in BLOCK_SIGNALS) or (resp and resp.status >= 400):
                             logger.warning(
-                                "Naukri blocked for role=%s city=%s (status=%s) — skipping",
-                                role, city, resp.status if resp else "?",
+                                "Naukri blocked for role=%s city=%s page=%d (status=%s) — skipping",
+                                role, city, page_num, resp.status if resp else "?",
                             )
                             continue
 
@@ -155,17 +173,17 @@ def scrape_naukri(roles: list[str], locations: list[str], hours_old: int) -> lis
                         count = cards.count()
                         for i in range(count):
                             job = _parse_card(cards.nth(i), city)
-                            if job and job["hours_ago"] <= hours_old:
+                            if job and job["hours_ago"] <= window_hours:
                                 results.append(job)
 
                     except Exception as e:
-                        logger.error("Naukri scrape error for role=%s city=%s: %s", role, city, e)
+                        logger.error("Naukri scrape error for role=%s city=%s page=%d: %s", role, city, page_num, e)
                     finally:
                         context.close()
                         time.sleep(random.uniform(5, 9))
         finally:
             browser.close()
 
-    logger.info("Naukri (Playwright): %d jobs within hours_old=%d across %d combos",
-                len(results), hours_old, len(roles) * len(locations))
+    logger.info("Naukri (Playwright): %d jobs within %dh (jobAge=%d) across %d combos x %d pages",
+                len(results), window_hours, job_age_days, len(roles) * len(locations), PAGES_PER_COMBO)
     return results

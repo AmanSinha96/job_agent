@@ -11,6 +11,7 @@ using the attached, JD-tailored resume.
 import argparse
 import asyncio
 import logging
+import math
 import traceback
 from datetime import datetime, timezone, timedelta
 
@@ -280,6 +281,32 @@ def build_digest_html(tailored: list[dict], other_matches: list[dict], total_fou
     """
 
 
+# The workflows pass a fixed --hours-old per cron slot, sized for on-time
+# runs — but GitHub Actions routinely starts scheduled runs 2-4h late (and
+# occasionally skips one), so postings made in the gap between two runs'
+# windows were never searched at all. The window is now widened to reach back
+# to this site set's last successful sweep, plus some overlap; dedup makes
+# the overlap free. Capped so one long outage doesn't trigger a huge scrape.
+SWEEP_OVERLAP_HOURS = 2
+MAX_SWEEP_HOURS = 48
+
+
+def _sites_key(sites: list[str]) -> str:
+    return ",".join(sorted(sites))
+
+
+def effective_hours_old(sites: list[str], requested: int) -> int:
+    last = database.get_meta(f"last_sweep_at:{_sites_key(sites)}")
+    if not last:
+        return requested
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except ValueError:
+        return requested
+    gap = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+    return int(min(max(requested, math.ceil(gap + SWEEP_OVERLAP_HOURS)), MAX_SWEEP_HOURS))
+
+
 ZERO_RESULT_ALERT_THRESHOLD = 3
 ZERO_RESULT_REMINDER_EVERY = 6
 
@@ -353,7 +380,7 @@ def notify_stale_watchlist_companies(companies: list[str]):
 
 
 def check_zero_result_streak(sites: list[str], saved: int):
-    key = f"zero_result_streak:{','.join(sorted(sites))}"
+    key = f"zero_result_streak:{_sites_key(sites)}"
     if saved > 0:
         database.set_meta(key, 0)
         return
@@ -369,9 +396,13 @@ def main(sites: list[str], hours_old: int):
     cycle_start = datetime.now(timezone.utc)
     database.init_db()
 
-    logger.info("Sweep: sites=%s hours_old=%s", sites, hours_old)
-    saved, stale_watchlist_companies = asyncio.run(pipeline.run(sites, hours_old))
+    window = effective_hours_old(sites, hours_old)
+    logger.info("Sweep: sites=%s hours_old=%s (requested %s)", sites, window, hours_old)
+    saved, stale_watchlist_companies = asyncio.run(pipeline.run(sites, window))
     logger.info("Sweep complete: %d new jobs saved", saved)
+    # Start-of-cycle, not now: postings made while this sweep was running
+    # may not have been picked up yet.
+    database.set_meta(f"last_sweep_at:{_sites_key(sites)}", cycle_start.isoformat())
     check_zero_result_streak(sites, saved)
     if stale_watchlist_companies:
         notify_stale_watchlist_companies(stale_watchlist_companies)

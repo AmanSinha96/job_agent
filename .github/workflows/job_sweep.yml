@@ -1,5 +1,9 @@
 name: Job Agent — Indeed Sweep
 
+# Also sweeps Glassdoor (jobspy, confirmed returning same-day India results
+# 2026-10), the company watchlist (career_sites.py) and free remote job-board
+# APIs (job_boards.py) — see the --sites arg below.
+#
 # zip_recruiter/naukri/google dropped from the site list below — confirmed
 # via live testing (network-blocked or returning zero rows). See cloud_run.py
 # for details. Re-add them in the "Run cloud pipeline" step's --sites arg
@@ -11,9 +15,9 @@ name: Job Agent — Indeed Sweep
 # showed delays growing to 2-4 hours by evening; an off-beat minute avoids
 # the worst of that contention (doesn't guarantee exact-time delivery,
 # nothing on the free tier can, but should meaningfully cut the delay).
-# --hours-old is set per-trigger below to exactly cover the gap since this
-# workflow's own previous run (floor 4h) — no gap in coverage, no need to
-# guess a single fixed value.
+# --hours-old is set per-trigger below to cover the gap since this
+# workflow's own previous run (floor 4h). cloud_run.py widens it further when
+# a run starts late, using the last successful sweep time stored in jobs.db.
 
 on:
   schedule:
@@ -27,7 +31,7 @@ jobs:
   sweep:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 40
+    timeout-minutes: 50
 
     steps:
 
@@ -132,7 +136,7 @@ jobs:
           EXPERIENCE_LEVEL: ${{ secrets.EXPERIENCE_LEVEL }}
 
         run: |
-          python cloud_run.py --sites indeed,watchlist --hours-old ${{ steps.hours.outputs.value }}
+          python cloud_run.py --sites indeed,glassdoor,watchlist,remote_boards --hours-old ${{ steps.hours.outputs.value }}
 
       # -------------------------------------------------------
       # Upload generated resumes
@@ -165,47 +169,7 @@ jobs:
       # -------------------------------------------------------
 
       - name: Commit updated data
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "Job Agent Bot"
-
-          git add data/jobs.db || true
-          git add resume_cache.json || true
-          git add generated_resumes/index.json || true
-
-          if git diff --cached --quiet; then
-            echo "Nothing to commit."
-          else
-            git commit -m "chore: update cache [skip ci]"
-
-            # Plain `git push` was silently losing this commit whenever
-            # main had moved since checkout (another workflow's commit, or
-            # a manual push) — confirmed live: data/jobs.db had ZERO
-            # commits in real history despite running for days, because
-            # this step has no pull/rebase and continue-on-error swallowed
-            # every rejected push. Cross-cycle job dedup was silently not
-            # persisting as a result. Retry with a rebase onto the latest
-            # main; jobs.db is a binary SQLite file so a real merge isn't
-            # possible on conflict — `-X ours` keeps this run's freshly
-            # scraped state, which loses whatever a concurrent run added
-            # that this run doesn't know about, but that's a rare, minor
-            # loss next to the previous near-100% silent failure rate.
-            pushed=false
-            for attempt in 1 2 3; do
-              if git push; then
-                pushed=true
-                break
-              fi
-              echo "Push rejected (attempt $attempt/3) — fetching and rebasing onto latest main..."
-              git fetch origin main
-              if ! git rebase -X ours origin/main; then
-                echo "Rebase conflict outside jobs.db/cache files — aborting this cycle's commit."
-                git rebase --abort
-                break
-              fi
-            done
-            if [ "$pushed" != "true" ]; then
-              echo "::warning::Could not push updated data/jobs.db after 3 attempts — this cycle's dedup state was not persisted."
-            fi
-          fi
+        # See scripts/commit_data.sh — merges this run's jobs.db into main's
+        # if another workflow pushed first, instead of dropping one side.
+        run: bash scripts/commit_data.sh "chore: update cache [skip ci]"
         continue-on-error: true

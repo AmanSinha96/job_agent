@@ -32,6 +32,9 @@ cloud_run.py              — entrypoint; scrape → tailor → email → notify
 pipeline.py                — sweep/rank/select, experience + salary gates
 job_filters.py              — roles, cities, keyword list, blocklist, thresholds
 naukri_playwright.py        — Naukri scraper (real browser; jobspy's Naukri API path is hard-blocked)
+career_sites.py             — company watchlist (Greenhouse/Lever/Ashby/Workday/SmartRecruiters/Oracle/Amazon APIs)
+job_boards.py               — free public job-board APIs (Himalayas: remote roles open to India)
+merge_db.py                 — row-level jobs.db merge, used by scripts/commit_data.sh in CI
 database.py                 — SQLite access (jobs table)
 config.py                   — env-driven config (API keys, Gmail paths, proxies)
 profile_loader.py           — candidate profile dict
@@ -76,8 +79,10 @@ Kept minimal intentionally for the first weeks — widen once results look right
 
 ## Known constraints, confirmed via live testing
 
-- ZipRecruiter (403) and Google Jobs (0 rows, parsing issue) are not usable
-  through jobspy. Not currently used.
+- ZipRecruiter (403) and Google Jobs (0 rows, parsing issue — re-confirmed
+  2026-10) are not usable through jobspy. Not currently used. Glassdoor via
+  jobspy works (2026-10, same-day India results) and runs in the Indeed
+  workflow.
 - Naukri via jobspy's own API-based scraper is hard-blocked (406 recaptcha)
   — TLS-fingerprint spoofing and header tuning both failed to get past it.
   Naukri via a real browser (`naukri_playwright.py`) works, confirmed live
@@ -93,6 +98,9 @@ Kept minimal intentionally for the first weeks — widen once results look right
 - Gmail OAuth refresh tokens expire after 7 days if the Google Cloud OAuth
   consent screen is left in "Testing" publishing status — must be "In
   production".
+- Dedup: normalized URL + company/title fingerprint within 30 days
+  (database.DUPLICATE_LOOKBACK_DAYS). Firehose postings older than 72h by
+  their own posted date are dropped (Indeed resurfaces months-old reposts).
 - `jobs.db` has no pruning — fine over weeks/months, would need a retention
   policy eventually.
 - The resume-tailoring cache doesn't persist across GitHub Actions runs

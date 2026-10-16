@@ -52,6 +52,19 @@ user applies manually. See `README.md` for the full architecture and
   event loop. If you ever touch that call site, keep it wrapped — calling
   `naukri_playwright.scrape_naukri()` directly from `sweep()` (an `async
   def`) throws immediately.
+- Dedup is by normalized URL **and** a company+title fingerprint
+  (`database.job_fingerprint`, 30-day lookback) — URL-only dedup let ~44%
+  of saved rows through as repeats (per-city LinkedIn IDs, tokenized Indeed
+  cross-post URLs, the same req on several boards). Because overlap is free,
+  search windows deliberately overlap previous runs (`cloud_run.effective_hours_old`,
+  Naukri's 24h minimum) — don't "tighten" them back to exact gaps.
+- The workflows' "Commit updated data" step is `scripts/commit_data.sh`,
+  which row-merges jobs.db via `merge_db.py` when another run pushed first.
+  Never go back to `git rebase -X ours` for it: during a rebase "ours" is
+  the upstream side, which silently discarded this run's jobs.db.
+- `--sites` also accepts `glassdoor` (jobspy), `watchlist`
+  (career_sites.py: Greenhouse/Lever/Ashby/Workday/SmartRecruiters/Oracle/
+  Amazon) and `remote_boards` (job_boards.py: Himalayas).
 - Secrets (`GMAIL_CREDENTIALS`, `GMAIL_TOKEN_B64`, `GROQ_API_KEY`,
   `GEMINI_API_KEY`) are GitHub Actions secrets only. Never commit
   `credentials.json`/`token.json`/`.env` — already covered by `.gitignore`.
