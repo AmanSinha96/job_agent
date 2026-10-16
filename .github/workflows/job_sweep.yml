@@ -171,5 +171,6 @@ jobs:
       - name: Commit updated data
         # See scripts/commit_data.sh — merges this run's jobs.db into main's
         # if another workflow pushed first, instead of dropping one side.
-        run: bash scripts/commit_data.sh "chore: update cache [skip ci]"
+        run: |
+          bash scripts/commit_data.sh "chore: update cache [skip ci]"
         continue-on-error: true
